@@ -11,6 +11,7 @@ from mlx_whisper import transcribe
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LANGUAGE = "ja"
 DEFAULT_MODEL_NAME = "mlx-community/whisper-large-v3-mlx"
 """デフォルトで使用するWhisper Largeモデル名。"""
 
@@ -63,8 +64,7 @@ def transcribe_all(
         raise FileNotFoundError(f"存在しない音声ファイルがあります: {', '.join(missing)}")
 
     transcribe_kwargs: dict[str, Any] = dict(decode_options)
-    if language:
-        transcribe_kwargs["language"] = language
+    transcribe_kwargs["language"] = language or DEFAULT_LANGUAGE
     if task:
         transcribe_kwargs["task"] = task
 
@@ -103,7 +103,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="mlx Whisper を用いた書き起こしテスト")
     parser.add_argument("audio", nargs="+", help="書き起こし対象の音声ファイルパス")
     parser.add_argument("--model", default=DEFAULT_MODEL_NAME, help="使用するモデル名")
-    parser.add_argument("--language", default=None, help="言語ヒント（例: ja, en）")
+    parser.add_argument("--language", default=DEFAULT_LANGUAGE, help="言語ヒント（例: ja, en）")
     parser.add_argument("--task", default=None, help="Whisperタスク（例: translate）")
     parser.add_argument(
         "--show-segments",
@@ -116,7 +116,7 @@ def main() -> None:
         results = transcribe_all(
             args.audio,
             model_name=args.model,
-            language=args.language,
+            language=args.language or DEFAULT_LANGUAGE,
             task=args.task,
         )
     except Exception as exc:  # noqa: BLE001 - テスト実行時の例外は明示的に表示する
