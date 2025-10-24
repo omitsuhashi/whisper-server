@@ -4,8 +4,8 @@ import argparse
 import logging
 from typing import Sequence
 
-from ..config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
-from ..lib.asr import TranscriptionResult, transcribe_all
+from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
+from src.lib.asr import TranscriptionResult, transcribe_all
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

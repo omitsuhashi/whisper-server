@@ -9,8 +9,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from ..config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
-from ..lib.asr import TranscriptionResult, transcribe_all
+from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
+from src.lib.asr import TranscriptionResult, transcribe_all
 
 logger = logging.getLogger(__name__)
 
