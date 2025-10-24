@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 from pathlib import Path
 from typing import Any, Iterable, List
@@ -94,3 +95,56 @@ def _build_transcription_result(path: Path, payload: dict[str, Any]) -> Transcri
         duration=payload.get("duration"),
         segments=segments,
     )
+
+
+def main() -> None:
+    """簡易テスト用のCLI。音声ファイルを書き起こして標準出力へ結果を表示する。"""
+
+    parser = argparse.ArgumentParser(description="mlx Whisper を用いた書き起こしテスト")
+    parser.add_argument("audio", nargs="+", help="書き起こし対象の音声ファイルパス")
+    parser.add_argument("--model", default=DEFAULT_MODEL_NAME, help="使用するモデル名")
+    parser.add_argument("--language", default=None, help="言語ヒント（例: ja, en）")
+    parser.add_argument("--task", default=None, help="Whisperタスク（例: translate）")
+    parser.add_argument(
+        "--show-segments",
+        action="store_true",
+        help="区間ごとの詳細結果も表示する場合は指定する",
+    )
+    args = parser.parse_args()
+
+    try:
+        results = transcribe_all(
+            args.audio,
+            model_name=args.model,
+            language=args.language,
+            task=args.task,
+        )
+    except Exception as exc:  # noqa: BLE001 - テスト実行時の例外は明示的に表示する
+        parser.error(f"書き起こしに失敗しました: {exc}")
+        return
+
+    for result in results:
+        print("=== ファイル:", result.filename)
+        print("言語:", result.language or "不明")
+        print("テキスト:\n", result.text)
+        if args.show_segments:
+            print("--- セグメント一覧 ---")
+            for segment in result.segments:
+                print(
+                    f"[{segment.start:.2f}s - {segment.end:.2f}s] "
+                    f"{segment.text.strip()}",
+                )
+        print()
+
+
+__all__ = [
+    "DEFAULT_MODEL_NAME",
+    "TranscriptionResult",
+    "TranscriptionSegment",
+    "main",
+    "transcribe_all",
+]
+
+
+if __name__ == "__main__":
+    main()
