@@ -9,7 +9,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from ..lib.asr import DEFAULT_MODEL_NAME, TranscriptionResult, transcribe_all
+from ..config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
+from ..lib.asr import TranscriptionResult, transcribe_all
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def create_app() -> FastAPI:
                 transcribe_all,
                 [tmp_path],
                 model_name=model or DEFAULT_MODEL_NAME,
-                language=language,
+                language=language or DEFAULT_LANGUAGE,
                 task=task,
             )
         except FileNotFoundError as exc:
