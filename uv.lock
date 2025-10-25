@@ -2287,7 +2287,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-multipart" },
     { name = "soundfile" },
+    { name = "torch" },
     { name = "torchaudio" },
+    { name = "torchcodec" },
 ]
 
 [package.metadata]
@@ -2300,7 +2302,9 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.12.3" },
     { name = "python-multipart", specifier = "==0.0.20" },
     { name = "soundfile", specifier = "==0.13.1" },
+    { name = "torch", specifier = "==2.9.0" },
     { name = "torchaudio", specifier = "==2.9.0" },
+    { name = "torchcodec", specifier = "==0.8.0" },
 ]
 
 [[package]]

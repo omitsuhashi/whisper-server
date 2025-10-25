@@ -12,5 +12,7 @@ dependencies = [
     "pydantic==2.12.3",
     "python-multipart==0.0.20",
     "soundfile==0.13.1",
+    "torch==2.9.0",
     "torchaudio==2.9.0",
+    "torchcodec==0.8.0",
 ]
