@@ -1,7 +1,7 @@
 PYTHON ?= python3
 CLI := $(PYTHON) -m src.cmd.cli
 
-.PHONY: help cli-help cli-files cli-stream audio-streaming test shell
+.PHONY: help cli cli-help cli-files cli-stream audio-streaming test shell
 
 help:
 	@echo "Available targets:"
@@ -12,6 +12,9 @@ help:
 	@echo "                               # 標準入力経由でストリーム書き起こし (音声バイトをパイプで供給すること)"
 	@echo "  make audio-streaming [DEVICE=idx] [SECONDS=] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # ffmpeg でマイク録音→CLI ストリームへパイプ"
+
+cli:
+	$(CLI)
 
 cli-help:
 	$(CLI) --help

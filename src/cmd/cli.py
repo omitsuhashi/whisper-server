@@ -15,6 +15,12 @@ if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対�
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
+from src.lib.diarize import (
+    DiarizeOptions,
+    SpeakerAnnotatedTranscript,
+    attach_speaker_labels,
+    diarize_all,
+)
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
 
@@ -55,6 +61,44 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="ファイルパスを指定して書き起こす",
     )
     file_parser.add_argument("audio", nargs="+", help="書き起こし対象の音声ファイルパス")
+    file_parser.add_argument(
+        "--diarize",
+        action="store_true",
+        help="書き起こしに話者分離の結果を付加する",
+    )
+    file_parser.add_argument(
+        "--diarize-num-speakers",
+        type=int,
+        default=None,
+        help="想定話者数（指定すると精度向上が見込めます）",
+    )
+    file_parser.add_argument(
+        "--diarize-min-speakers",
+        type=int,
+        default=None,
+        help="想定最小話者数",
+    )
+    file_parser.add_argument(
+        "--diarize-max-speakers",
+        type=int,
+        default=None,
+        help="想定最大話者数",
+    )
+    file_parser.add_argument(
+        "--diarize-device",
+        default=None,
+        help="話者分離を実行するデバイス（例: mps / cpu / cuda）",
+    )
+    file_parser.add_argument(
+        "--diarize-token",
+        default=None,
+        help="Hugging Face のアクセストークン（未指定時は環境変数から探索）",
+    )
+    file_parser.add_argument(
+        "--diarize-require-mps",
+        action="store_true",
+        help="MPS (Metal) が利用できない場合は失敗させる",
+    )
 
     stream_parser = subparsers.add_parser(
         "stream",
@@ -127,12 +171,34 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
             names=[args.name],
         )
 
-    return transcribe_all(
+    results = transcribe_all(
         args.audio,
         model_name=model_name,
         language=language,
         task=args.task,
     )
+
+    if getattr(args, "diarize", False):
+        diarize_options = DiarizeOptions(
+            token=args.diarize_token,
+            num_speakers=args.diarize_num_speakers,
+            min_speakers=args.diarize_min_speakers,
+            max_speakers=args.diarize_max_speakers,
+            device=args.diarize_device,
+            require_mps=args.diarize_require_mps,
+        )
+        diarization_results = diarize_all(args.audio, options=diarize_options)
+        diarization_map = {dr.filename: dr for dr in diarization_results}
+        speaker_transcripts: dict[str, SpeakerAnnotatedTranscript] = {}
+        for result in results:
+            diar = diarization_map.get(result.filename)
+            if diar is None:
+                raise RuntimeError(f"話者分離結果が見つかりませんでした: {result.filename}")
+            speaker_transcripts[result.filename] = attach_speaker_labels(result, diar)
+        args._speaker_transcripts = speaker_transcripts  # type: ignore[attr-defined]
+        args._diarization_results = diarization_map  # type: ignore[attr-defined]
+
+    return results
 
 
 def _streaming_transcription(
@@ -209,15 +275,31 @@ def main(argv: Sequence[str] | None = None) -> None:
     for result in results:
         print("=== ファイル:", result.filename)
         print("言語:", result.language or "不明")
+        speaker_map: dict[str, SpeakerAnnotatedTranscript] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
+        diar_map = getattr(args, "_diarization_results", {})
+        speaker_transcript = speaker_map.get(result.filename) if speaker_map else None
+        diar_result = diar_map.get(result.filename) if diar_map else None
+        if speaker_transcript:
+            print("話者:", ", ".join(speaker_transcript.speakers) or "-")
+        elif diar_result:
+            print("話者:", ", ".join(diar_result.speakers) or "-")
         if not getattr(args, "_stream_output", False):
             print("テキスト:\n", result.text)
         if args.show_segments:
-            print("--- セグメント一覧 ---")
-            for segment in result.segments:
-                print(
-                    f"[{segment.start:.2f}s - {segment.end:.2f}s] "
-                    f"{segment.text.strip()}",
-                )
+            if speaker_transcript:
+                print("--- 話者付きセグメント ---")
+                for segment in speaker_transcript.segments:
+                    print(
+                        f"[{segment.start:.2f}s - {segment.end:.2f}s] "
+                        f"{segment.speaker}: {segment.text.strip()}",
+                    )
+            else:
+                print("--- セグメント一覧 ---")
+                for segment in result.segments:
+                    print(
+                        f"[{segment.start:.2f}s - {segment.end:.2f}s] "
+                        f"{segment.text.strip()}",
+                    )
         print()
 
 
