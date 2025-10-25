@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Iterable, List
+from subprocess import CalledProcessError, run
+from typing import Any, Iterable, List, Sequence
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from mlx_whisper import transcribe
+from mlx_whisper.audio import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +64,7 @@ def transcribe_all(
     if not model_name:
         raise ValueError("model_name を指定してください。")
 
-    transcribe_kwargs: dict[str, Any] = dict(decode_options)
-    if language:
-        transcribe_kwargs["language"] = language
-    if task:
-        transcribe_kwargs["task"] = task
-
+    transcribe_kwargs = _build_transcribe_kwargs(language, task, decode_options)
     results: List[TranscriptionResult] = []
     for path in resolved:
         logger.info(
@@ -76,19 +74,66 @@ def transcribe_all(
             language,
             task,
         )
-        raw_result = transcribe(str(path), path_or_hf_repo=model_name, **transcribe_kwargs)
-        results.append(_build_transcription_result(path, raw_result))
+        results.append(
+            _transcribe_single(
+                audio_input=str(path),
+                display_name=path,
+                model_name=model_name,
+                transcribe_kwargs=transcribe_kwargs,
+            )
+        )
 
     return results
 
 
-def _build_transcription_result(path: Path, payload: dict[str, Any]) -> TranscriptionResult:
+def transcribe_all_bytes(
+    audio_blobs: Iterable[bytes | bytearray | memoryview],
+    *,
+    model_name: str,
+    language: str | None = None,
+    task: str | None = None,
+    names: Sequence[str] | None = None,
+    **decode_options: Any,
+) -> List[TranscriptionResult]:
+    """メモリ上の音声データを書き起こすヘルパー関数。"""
+
+    transcribe_kwargs = _build_transcribe_kwargs(language, task, decode_options)
+    name_overrides = list(names or [])
+
+    results: List[TranscriptionResult] = []
+    for index, blob in enumerate(audio_blobs):
+        audio_bytes = _coerce_to_bytes(blob)
+        display_name = (
+            name_overrides[index] if index < len(name_overrides) else f"stream_{index + 1}"
+        )
+        logger.info(
+            "音声ストリームを書き起こし中: %s (model=%s language=%s task=%s)",
+            display_name,
+            model_name,
+            language,
+            task,
+        )
+        waveform = _decode_audio_bytes(audio_bytes)
+        results.append(
+            _transcribe_single(
+                audio_input=waveform,
+                display_name=display_name,
+                model_name=model_name,
+                transcribe_kwargs=transcribe_kwargs,
+            )
+        )
+
+    return results
+
+
+def _build_transcription_result(source: Path | str, payload: dict[str, Any]) -> TranscriptionResult:
     """mlx_whisperの戻り値をTranscriptionResultへ変換する。"""
 
     segments_raw = payload.get("segments", []) or []
     segments = [TranscriptionSegment.model_validate(segment) for segment in segments_raw]
+    filename = source.name if isinstance(source, Path) else Path(str(source)).name
     return TranscriptionResult(
-        filename=path.name,
+        filename=filename,
         text=payload.get("text", ""),
         language=payload.get("language"),
         duration=payload.get("duration"),
@@ -96,8 +141,87 @@ def _build_transcription_result(path: Path, payload: dict[str, Any]) -> Transcri
     )
 
 
+def _build_transcribe_kwargs(
+    language: str | None,
+    task: str | None,
+    decode_options: dict[str, Any],
+) -> dict[str, Any]:
+    """transcribe関数へ渡すオプション辞書を組み立てる。"""
+
+    transcribe_kwargs: dict[str, Any] = dict(decode_options)
+    if language:
+        transcribe_kwargs["language"] = language
+    if task:
+        transcribe_kwargs["task"] = task
+    return transcribe_kwargs
+
+
+def _transcribe_single(
+    *,
+    audio_input: Any,
+    display_name: Path | str,
+    model_name: str,
+    transcribe_kwargs: dict[str, Any],
+) -> TranscriptionResult:
+    """transcribeを呼び出しTranscriptionResultへ変換する。"""
+
+    raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **transcribe_kwargs)
+    return _build_transcription_result(display_name, raw_result)
+
+
+def _coerce_to_bytes(blob: bytes | bytearray | memoryview) -> bytes:
+    """各種バイト列を生のbytesに統一する。"""
+
+    if isinstance(blob, bytes):
+        return blob
+    if isinstance(blob, bytearray):
+        return bytes(blob)
+    return bytes(memoryview(blob))
+
+
+def _decode_audio_bytes(audio_bytes: bytes) -> np.ndarray:
+    """音声ファイルのバイト列を波形へデコードする。"""
+
+    if not audio_bytes:
+        raise ValueError("音声データが空です。")
+
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        "pipe:0",
+        "-threads",
+        "0",
+        "-f",
+        "s16le",
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        str(SAMPLE_RATE),
+        "-",
+    ]
+    try:
+        completed = run(cmd, input=audio_bytes, capture_output=True, check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg が見つかりません。音声データをデコードできませんでした。") from exc
+    except CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="ignore") if exc.stderr else "unknown error"
+        raise RuntimeError(f"音声データのデコードに失敗しました: {stderr}") from exc
+
+    waveform = np.frombuffer(completed.stdout, dtype=np.int16).astype(np.float32)
+    if waveform.size == 0:
+        raise RuntimeError("音声データのデコード結果が空でした。")
+    return waveform / 32768.0
+
+
 __all__ = [
     "TranscriptionResult",
     "TranscriptionSegment",
     "transcribe_all",
+    "transcribe_all_bytes",
 ]
