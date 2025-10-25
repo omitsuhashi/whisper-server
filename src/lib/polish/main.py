@@ -2,20 +2,41 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Tuple, Dict, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
+import spacy
 from pydantic import BaseModel, ConfigDict, Field
+from spacy.language import Language
 
-try:
-    # GiNZA が入っていれば文分割に利用（任意）
-    import spacy  # type: ignore
-    _GINZA_OK = True
-except Exception:
-    _GINZA_OK = False
+logger = logging.getLogger(__name__)
+
+_GINZA_MODEL_NAME = "ja_ginza_electra"
+_GINZA_NLP: Language | None = None
+
+
+def _load_ginza(model_name: str) -> Language:
+    """GiNZA モデルをロードし、グローバルにキャッシュする。"""
+
+    global _GINZA_MODEL_NAME, _GINZA_NLP
+    if _GINZA_NLP is not None and _GINZA_MODEL_NAME == model_name:
+        return _GINZA_NLP
+
+    try:
+        nlp = spacy.load(model_name)
+    except Exception as exc:  # noqa: BLE001 - モデル依存なので詳細な例外はラップしない
+        raise RuntimeError(
+            f"GiNZA モデル '{model_name}' の読み込みに失敗しました。"
+            " pip install ginza ja-ginza-electra 等で依存関係を満たしてください。"
+        ) from exc
+
+    _GINZA_MODEL_NAME = model_name
+    _GINZA_NLP = nlp
+    return nlp
 
 # asr モジュールのモデルをそのまま受け取れるように型だけ参照
 try:
@@ -60,7 +81,9 @@ class PolishedDocument(BaseModel):
 class PolishOptions:
     """校正オプション（すべて任意・安全なデフォルト）"""
     style: str = "ですます"          # "常体" も指定可
-    use_ginza: bool = True           # GiNZA が見つからなければ自動無効化
+    use_ginza: bool = True           # GiNZA を利用した文分割
+    ginza_model: str = "ja_ginza_electra"
+    ginza_fallback_to_heuristics: bool = True  # GiNZA 失敗時にヒューリスティクスへフォールバックするか
     remove_fillers: bool = True
     filler_patterns: Tuple[str, ...] = (
         r"(えー|あー|えっと|そのー|まー|なんか)(?:\s|$)",
@@ -191,14 +214,12 @@ def _apply_terms(s: str, pairs: Tuple[Tuple[str, str], ...], regex: bool) -> str
 # ------------------------------
 # 文分割
 # ------------------------------
-def _sent_split_ginza(text: str) -> List[str]:
-    # GiNZA が利用可能なら係り受けベースで分割（安定）
-    try:
-        nlp = spacy.load("ja_ginza_electra")  # type: ignore
-        doc = nlp(text)
-        return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
-    except Exception:
-        return []
+def _sent_split_ginza(text: str, opt: PolishOptions) -> List[str]:
+    """GiNZA による文分割。"""
+
+    nlp = _load_ginza(opt.ginza_model)
+    doc = nlp(text)
+    return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
 
 def _sent_split_heuristics(text: str, opt: PolishOptions) -> List[str]:
@@ -234,10 +255,15 @@ def _sent_split_heuristics(text: str, opt: PolishOptions) -> List[str]:
 
 
 def _split_into_sentences(text: str, opt: PolishOptions) -> List[str]:
-    if opt.use_ginza and _GINZA_OK:
-        sents = _sent_split_ginza(text)
-        if sents:
-            return sents
+    if opt.use_ginza:
+        try:
+            sents = _sent_split_ginza(text, opt)
+            if sents:
+                return sents
+        except Exception as exc:  # noqa: BLE001
+            if not opt.ginza_fallback_to_heuristics:
+                raise
+            logger.warning("GiNZAによる文分割に失敗したためヒューリスティクスへフォールバックします: %s", exc)
     return _sent_split_heuristics(text, opt)
 
 
