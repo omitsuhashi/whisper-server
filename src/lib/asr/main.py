@@ -67,7 +67,7 @@ def transcribe_all(
     transcribe_kwargs = _build_transcribe_kwargs(language, task, decode_options)
     results: List[TranscriptionResult] = []
     for path in resolved:
-        logger.info(
+        logger.debug(
             "音声ファイルを書き起こし中: %s (model=%s language=%s task=%s)",
             path.name,
             model_name,
@@ -106,7 +106,7 @@ def transcribe_all_bytes(
         display_name = (
             name_overrides[index] if index < len(name_overrides) else f"stream_{index + 1}"
         )
-        logger.info(
+        logger.debug(
             "音声ストリームを書き起こし中: %s (model=%s language=%s task=%s)",
             display_name,
             model_name,
