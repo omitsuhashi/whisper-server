@@ -5,6 +5,8 @@ description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi==0.120.0",
+    "ginza==5.2.0",
+    "ja-ginza==5.2.0",
     "mlx-whisper==0.4.3",
     "pydantic==2.12.3",
 ]
