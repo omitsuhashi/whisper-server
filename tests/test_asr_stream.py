@@ -78,7 +78,7 @@ class TranscribeAllBytesTests(unittest.TestCase):
             self.skipTest("ffmpeg が見つかりません")
         self.audio_bytes = _generate_wav_bytes()
 
-    @mock.patch.object(asr_main, "transcribe")
+    @mock.patch("src.lib.asr.pipeline.transcribe")
     def test_transcribe_all_bytes_decodes_and_dispatches(self, mock_transcribe: mock.Mock) -> None:
         mock_transcribe.return_value = {
             "text": "ok",

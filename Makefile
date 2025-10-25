@@ -1,7 +1,7 @@
 PYTHON ?= python3
 CLI := $(PYTHON) -m src.cmd.cli
 
-.PHONY: help cli-help cli-files cli-stream audio-streaming
+.PHONY: help cli-help cli-files cli-stream audio-streaming test shell
 
 help:
 	@echo "Available targets:"
@@ -50,3 +50,16 @@ audio-streaming:
 	echo "ffmpeg -hide_banner -loglevel error -f avfoundation -i $${DEVICE_VAL} -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS"; \
 	ffmpeg -hide_banner -loglevel error -f avfoundation -i "$${DEVICE_VAL}" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - \
 		| $(CLI) stream $$FLAGS
+
+test:
+	$(PYTHON) -m unittest discover -s tests
+
+shell:
+	@if [ ! -d ".venv" ]; then \
+		echo ".venv ディレクトリが見つかりません。作成するには 'python3 -m venv .venv' を実行してください。"; \
+		exit 1; \
+	fi
+	@echo "source .venv/bin/activate"
+	@SHELL=$$SHELL; \
+	if [ -z "$$SHELL" ]; then SHELL=/bin/bash; fi; \
+	$$SHELL --login -i -c "source .venv/bin/activate && exec $$SHELL"
