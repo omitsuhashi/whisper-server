@@ -3,9 +3,26 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import Sequence
+import time
+from pathlib import Path
+from typing import Iterable, Sequence
+
+# 直接スクリプトとして実行された場合でも src パッケージを解決できるようにする
+if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対応
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.append(str(project_root))
+
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
+
+STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
+
+
+def _read_stream(buffer: Iterable[bytes]) -> Iterable[bytes]:
+    for chunk in buffer:
+        if chunk:
+            yield chunk
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -49,6 +66,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="stdin",
         help="結果に表示する仮想ファイル名",
     )
+    stream_parser.add_argument(
+        "--stream-interval",
+        type=float,
+        default=0.0,
+        help="指定秒数ごとに書き起こしを更新して標準出力へ追記する (0 の場合は最後にまとめて出力)",
+    )
+    stream_parser.add_argument(
+        "--stream-chunk-size",
+        type=int,
+        default=0,
+        help=argparse.SUPPRESS,
+    )
 
     subparsers.required = False
     parser.set_defaults(command="files")
@@ -67,9 +96,26 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
     model_name = args.model or DEFAULT_MODEL_NAME
     language = args.language or DEFAULT_LANGUAGE
 
+    args._stream_output = False  # type: ignore[attr-defined]
+
     if args.command == "stream":
         if sys.stdin.buffer.isatty():
             raise ValueError("ストリームモードでは標準入力へ音声データをパイプしてください。")
+
+        chunk_size = args.stream_chunk_size if args.stream_chunk_size > 0 else STREAM_DEFAULT_CHUNK
+        interval = max(float(args.stream_interval or 0.0), 0.0)
+
+        if interval > 0:
+            args._stream_output = True  # type: ignore[attr-defined]
+            return _streaming_transcription(
+                model_name=model_name,
+                language=language,
+                task=args.task,
+                name=args.name,
+                chunk_size=chunk_size,
+                interval=interval,
+            )
+
         audio_bytes = sys.stdin.buffer.read()
         if not audio_bytes:
             raise ValueError("標準入力から音声データを読み取れませんでした。")
@@ -89,6 +135,67 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
     )
 
 
+def _streaming_transcription(
+    *,
+    model_name: str,
+    language: str | None,
+    task: str | None,
+    name: str,
+    chunk_size: int,
+    interval: float,
+) -> list[TranscriptionResult]:
+    """標準入力からのストリームを一定間隔で書き起こして標準出力へ追記する。"""
+
+    stdin_buffer = sys.stdin.buffer
+    audio_buffer = bytearray()
+    last_emit_text = ""
+    last_flush = time.monotonic()
+    results: list[TranscriptionResult] = []
+
+    def flush(force: bool = False) -> None:
+        nonlocal last_emit_text, results
+        if not audio_buffer:
+            return
+        if not force and (time.monotonic() - last_flush) < interval:
+            return
+
+        current_results = transcribe_all_bytes(
+            [bytes(audio_buffer)],
+            model_name=model_name,
+            language=language,
+            task=task,
+            names=[name],
+        )
+        if not current_results:
+            return
+        results = current_results
+        current_text = current_results[0].text
+
+        if len(current_text) > len(last_emit_text):
+            new_text = current_text[len(last_emit_text) :]
+            if new_text:
+                sys.stdout.write(new_text)
+                sys.stdout.flush()
+            last_emit_text = current_text
+
+    while True:
+        chunk = stdin_buffer.read(chunk_size)
+        if not chunk:
+            break
+        audio_buffer.extend(chunk)
+        now = time.monotonic()
+        if (now - last_flush) >= interval:
+            flush(force=True)
+            last_flush = now
+
+    flush(force=True)
+    if results:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return results
+    raise ValueError("標準入力から音声データを読み取れませんでした。")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """エントリーポイント。実行結果を標準出力へ流す。"""
 
@@ -102,7 +209,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     for result in results:
         print("=== ファイル:", result.filename)
         print("言語:", result.language or "不明")
-        print("テキスト:\n", result.text)
+        if not getattr(args, "_stream_output", False):
+            print("テキスト:\n", result.text)
         if args.show_segments:
             print("--- セグメント一覧 ---")
             for segment in result.segments:

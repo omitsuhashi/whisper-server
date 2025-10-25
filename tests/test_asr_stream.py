@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import io
 import shutil
@@ -9,9 +10,8 @@ from contextlib import closing
 from unittest import mock
 
 import numpy as np
-from fastapi.testclient import TestClient
 
-# テスト実行時に実機の mlx_whisper を初期化しないためのスタブ
+# mlx_whisper の初期化を避けるためのスタブ
 original_mlx = sys.modules.get("mlx_whisper")
 original_mlx_audio = sys.modules.get("mlx_whisper.audio")
 
@@ -40,16 +40,14 @@ atexit.register(_restore_original_modules)
 
 from src.cmd import cli
 from src.cmd import http as http_cmd
+from src.config.defaults import DEFAULT_MODEL_NAME
 from src.lib.asr import TranscriptionResult
 from src.lib.asr import main as asr_main
 
 
 def _generate_wav_bytes(duration_sec: float = 0.1) -> bytes:
-    """16kHz モノラルのシンプルなサイン波を WAV バイト列として生成する。"""
-
     sample_rate = 16000
     total_samples = int(sample_rate * duration_sec)
-    # 無音に近い微小振幅で十分
     payload = (np.sin(np.linspace(0, np.pi, total_samples)) * 1000).astype(np.int16)
 
     buffer = io.BytesIO()
@@ -62,8 +60,6 @@ def _generate_wav_bytes(duration_sec: float = 0.1) -> bytes:
 
 
 class FakeStdin(types.SimpleNamespace):
-    """`sys.stdin` 代替オブジェクト。"""
-
     def __init__(self, data: bytes):
         super().__init__(buffer=_FakeBuffer(data))
 
@@ -137,6 +133,52 @@ class CliStreamTests(unittest.TestCase):
         self.assertEqual(payloads[0], self.audio_bytes)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(results, [fake_result])
+        self.assertFalse(getattr(args, "_stream_output", False))
+
+    @mock.patch.object(cli, "transcribe_all_bytes")
+    def test_stream_subcommand_with_interval_streams_output(
+        self, mock_transcribe_bytes: mock.Mock
+    ) -> None:
+        first = TranscriptionResult(filename="stdin", text="こ")
+        second = TranscriptionResult(filename="stdin", text="こんにちは")
+        mock_transcribe_bytes.side_effect = [[first], [second], [second]]
+
+        fake_audio = b"abcdwxyz"
+        fake_stdin = FakeStdin(fake_audio)
+
+        original_stdin = cli.sys.stdin
+        original_stdout = sys.stdout
+        cli.sys.stdin = fake_stdin
+        sys.stdout = io.StringIO()
+
+        times = [0.0, 1.0, 2.0, 3.0]
+
+        def fake_monotonic() -> float:
+            return times.pop(0)
+
+        with mock.patch.object(cli.time, "monotonic", side_effect=fake_monotonic):
+            try:
+                args = cli.parse_args(
+                    [
+                        "stream",
+                        "--model",
+                        "fake",
+                        "--stream-interval",
+                        "0.5",
+                        "--stream-chunk-size",
+                        "4",
+                    ]
+                )
+                results = cli.run_cli(args)
+            finally:
+                cli.sys.stdin = original_stdin
+                captured = sys.stdout.getvalue()
+                sys.stdout = original_stdout
+
+        self.assertEqual(captured.strip(), "こんにちは")
+        self.assertTrue(getattr(args, "_stream_output", False))
+        self.assertEqual(results, [second])
+        self.assertEqual(mock_transcribe_bytes.call_count, 3)
 
 
 class HttpWebSocketTests(unittest.TestCase):
@@ -144,31 +186,82 @@ class HttpWebSocketTests(unittest.TestCase):
         if shutil.which("ffmpeg") is None:
             self.skipTest("ffmpeg が見つかりません")
         self.audio_bytes = _generate_wav_bytes()
-        self.client = TestClient(http_cmd.create_app())
+
+    @staticmethod
+    async def _invoke_ws(actions, **handler_kwargs):
+        app = http_cmd.create_app()
+        route = next(r for r in app.routes if getattr(r, "path", None) == "/ws/transcribe")
+        handler = route.endpoint
+
+        websocket = _MockWebSocket(actions)
+        await handler(websocket, **handler_kwargs)
+        return websocket
 
     @mock.patch("src.cmd.http.transcribe_all_bytes")
     def test_ws_transcribe_success(self, mock_transcribe_bytes: mock.Mock) -> None:
         fake_result = TranscriptionResult(filename="ws", text="ok", language="ja")
         mock_transcribe_bytes.return_value = [fake_result]
 
-        with self.client.websocket_connect("/ws/transcribe?model=fake-model&language=ja") as ws:
-            ws.send_bytes(self.audio_bytes)
-            ws.send_text("done")
-            payload = ws.receive_json()
+        actions = [
+            {"bytes": self.audio_bytes},
+            {"text": "done"},
+        ]
 
-        self.assertEqual(payload["text"], "ok")
-        self.assertEqual(payload["language"], "ja")
+        websocket = asyncio.run(
+            self._invoke_ws(
+                actions,
+                model="fake-model",
+                language="ja",
+                task=None,
+            )
+        )
+
+        self.assertTrue(websocket.accepted)
+        self.assertTrue(websocket.closed)
+        self.assertEqual(websocket.close_code, 1000)
+        self.assertEqual(websocket.sent[0]["text"], "ok")
         mock_transcribe_bytes.assert_called_once()
         _, kwargs = mock_transcribe_bytes.call_args
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(kwargs["language"], "ja")
 
     def test_ws_transcribe_empty_audio(self) -> None:
-        with self.client.websocket_connect("/ws/transcribe") as ws:
-            ws.send_text("done")
-            payload = ws.receive_json()
-            self.assertIn("error", payload)
-            self.assertIn("音声データが送信されていません", payload["error"])
+        actions = [{"text": "done"}]
+
+        websocket = asyncio.run(
+            self._invoke_ws(
+                actions,
+                model=DEFAULT_MODEL_NAME,
+                language=None,
+                task=None,
+            )
+        )
+
+        self.assertTrue(websocket.closed)
+        self.assertEqual(websocket.close_code, 1007)
+        self.assertIn("音声データが送信されていません", websocket.sent[0]["error"])
+
+
+class _MockWebSocket:
+    def __init__(self, actions):
+        self._actions = iter(actions)
+        self.sent = []
+        self.accepted = False
+        self.closed = False
+        self.close_code = None
+
+    async def accept(self) -> None:
+        self.accepted = True
+
+    async def receive(self):
+        return next(self._actions)
+
+    async def send_json(self, message) -> None:
+        self.sent.append(message)
+
+    async def close(self, code: int) -> None:
+        self.closed = True
+        self.close_code = code
 
 
 if __name__ == "__main__":  # pragma: no cover
