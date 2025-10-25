@@ -77,6 +77,52 @@ def create_app() -> FastAPI:
 
         await websocket.accept()
         audio_buffer = bytearray()
+        last_text = ""
+        closed = False
+
+        async def emit(final: bool) -> None:
+            nonlocal last_text, closed
+
+            if not audio_buffer:
+                await websocket.send_json({"error": "音声データが送信されていません。", "final": final})
+                if final:
+                    await websocket.close(code=1007)
+                    closed = True
+                return
+
+            try:
+                results = await asyncio.to_thread(
+                    transcribe_all_bytes,
+                    [bytes(audio_buffer)],
+                    model_name=model or DEFAULT_MODEL_NAME,
+                    language=language or DEFAULT_LANGUAGE,
+                    task=task,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("WebSocket書き起こし中にエラーが発生しました")
+                await websocket.send_json({"error": "書き起こしに失敗しました。", "final": final})
+                await websocket.close(code=1011)
+                closed = True
+                return
+
+            if not results:
+                await websocket.send_json({"error": "書き起こし結果が空でした。", "final": final})
+                await websocket.close(code=1011)
+                closed = True
+                return
+
+            result = results[0]
+            text = result.text or ""
+            delta = text[len(last_text) :] if text.startswith(last_text) else text
+            last_text = text
+
+            payload = result.model_dump()
+            payload.update({"delta": delta, "final": final})
+            await websocket.send_json(payload)
+
+            if final:
+                await websocket.close(code=1000)
+                closed = True
 
         try:
             while True:
@@ -90,42 +136,22 @@ def create_app() -> FastAPI:
                 if text is None:
                     continue
 
-                if text.lower() in {"done", "finish", "close"}:
+                command = text.strip().lower()
+                if command in {"flush", "partial"}:
+                    await emit(final=False)
+                elif command in {"done", "finish", "close"}:
+                    await emit(final=True)
                     break
         except WebSocketDisconnect:
             return
         except Exception as exc:  # noqa: BLE001 - 予期せぬ障害はクライアントへ通知する
             logger.exception("WebSocket受信中にエラーが発生しました")
-            await websocket.send_json({"error": f"受信中にエラーが発生しました: {exc}"})
+            await websocket.send_json({"error": f"受信中にエラーが発生しました: {exc}", "final": False})
             await websocket.close(code=1011)
             return
 
-        if not audio_buffer:
-            await websocket.send_json({"error": "音声データが送信されていません。"})
-            await websocket.close(code=1007)
-            return
-
-        try:
-            results = await asyncio.to_thread(
-                transcribe_all_bytes,
-                [bytes(audio_buffer)],
-                model_name=model or DEFAULT_MODEL_NAME,
-                language=language or DEFAULT_LANGUAGE,
-                task=task,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("WebSocket書き起こし中にエラーが発生しました")
-            await websocket.send_json({"error": "書き起こしに失敗しました。"})
-            await websocket.close(code=1011)
-            return
-
-        if not results:
-            await websocket.send_json({"error": "書き起こし結果が空でした。"})
-            await websocket.close(code=1011)
-            return
-
-        await websocket.send_json(results[0].model_dump())
-        await websocket.close(code=1000)
+        if not closed and audio_buffer:
+            await emit(final=True)
 
     return app
 

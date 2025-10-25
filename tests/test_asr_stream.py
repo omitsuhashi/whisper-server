@@ -220,6 +220,8 @@ class HttpWebSocketTests(unittest.TestCase):
         self.assertTrue(websocket.closed)
         self.assertEqual(websocket.close_code, 1000)
         self.assertEqual(websocket.sent[0]["text"], "ok")
+        self.assertTrue(websocket.sent[0]["final"])
+        self.assertEqual(websocket.sent[0]["delta"], "ok")
         mock_transcribe_bytes.assert_called_once()
         _, kwargs = mock_transcribe_bytes.call_args
         self.assertEqual(kwargs["model_name"], "fake-model")
@@ -240,6 +242,41 @@ class HttpWebSocketTests(unittest.TestCase):
         self.assertTrue(websocket.closed)
         self.assertEqual(websocket.close_code, 1007)
         self.assertIn("音声データが送信されていません", websocket.sent[0]["error"])
+        self.assertTrue(websocket.sent[0]["final"])
+
+    @mock.patch("src.cmd.http.transcribe_all_bytes")
+    def test_ws_transcribe_flush_partial(self, mock_transcribe_bytes: mock.Mock) -> None:
+        first = TranscriptionResult(filename="ws", text="こ", language="ja")
+        second = TranscriptionResult(filename="ws", text="こんにちは", language="ja")
+        mock_transcribe_bytes.side_effect = [[first], [second]]
+
+        mid = len(self.audio_bytes) // 2
+        actions = [
+            {"bytes": self.audio_bytes[:mid]},
+            {"text": "flush"},
+            {"bytes": self.audio_bytes[mid:]},
+            {"text": "done"},
+        ]
+
+        websocket = asyncio.run(
+            self._invoke_ws(
+                actions,
+                model="fake-model",
+                language="ja",
+                task=None,
+            )
+        )
+
+        self.assertEqual(len(websocket.sent), 2)
+        partial, final = websocket.sent
+        self.assertFalse(partial["final"])
+        self.assertEqual(partial["delta"], "こ")
+        self.assertEqual(partial["text"], "こ")
+        self.assertTrue(final["final"])
+        self.assertEqual(final["delta"], "んにちは")
+        self.assertEqual(final["text"], "こんにちは")
+        self.assertTrue(websocket.closed)
+        self.assertEqual(mock_transcribe_bytes.call_count, 2)
 
 
 class _MockWebSocket:
