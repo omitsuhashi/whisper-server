@@ -9,6 +9,7 @@ from contextlib import closing
 from unittest import mock
 
 import numpy as np
+from fastapi.testclient import TestClient
 
 # テスト実行時に実機の mlx_whisper を初期化しないためのスタブ
 original_mlx = sys.modules.get("mlx_whisper")
@@ -38,6 +39,7 @@ def _restore_original_modules() -> None:
 atexit.register(_restore_original_modules)
 
 from src.cmd import cli
+from src.cmd import http as http_cmd
 from src.lib.asr import TranscriptionResult
 from src.lib.asr import main as asr_main
 
@@ -135,6 +137,38 @@ class CliStreamTests(unittest.TestCase):
         self.assertEqual(payloads[0], self.audio_bytes)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(results, [fake_result])
+
+
+class HttpWebSocketTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if shutil.which("ffmpeg") is None:
+            self.skipTest("ffmpeg が見つかりません")
+        self.audio_bytes = _generate_wav_bytes()
+        self.client = TestClient(http_cmd.create_app())
+
+    @mock.patch("src.cmd.http.transcribe_all_bytes")
+    def test_ws_transcribe_success(self, mock_transcribe_bytes: mock.Mock) -> None:
+        fake_result = TranscriptionResult(filename="ws", text="ok", language="ja")
+        mock_transcribe_bytes.return_value = [fake_result]
+
+        with self.client.websocket_connect("/ws/transcribe?model=fake-model&language=ja") as ws:
+            ws.send_bytes(self.audio_bytes)
+            ws.send_text("done")
+            payload = ws.receive_json()
+
+        self.assertEqual(payload["text"], "ok")
+        self.assertEqual(payload["language"], "ja")
+        mock_transcribe_bytes.assert_called_once()
+        _, kwargs = mock_transcribe_bytes.call_args
+        self.assertEqual(kwargs["model_name"], "fake-model")
+        self.assertEqual(kwargs["language"], "ja")
+
+    def test_ws_transcribe_empty_audio(self) -> None:
+        with self.client.websocket_connect("/ws/transcribe") as ws:
+            ws.send_text("done")
+            payload = ws.receive_json()
+            self.assertIn("error", payload)
+            self.assertIn("音声データが送信されていません", payload["error"])
 
 
 if __name__ == "__main__":  # pragma: no cover

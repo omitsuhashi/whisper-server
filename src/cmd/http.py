@@ -7,10 +7,11 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
+from fastapi import WebSocketDisconnect
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
-from src.lib.asr import TranscriptionResult, transcribe_all
+from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,67 @@ def create_app() -> FastAPI:
         result = results[0]
         display_name = file.filename or result.filename
         return result.model_copy(update={"filename": display_name})
+
+    @app.websocket("/ws/transcribe")
+    async def transcribe_stream(
+        websocket: WebSocket,
+        model: str = DEFAULT_MODEL_NAME,
+        language: Optional[str] = None,
+        task: Optional[str] = None,
+    ) -> None:
+        """WebSocket経由で音声バイト列を受け取り、書き起こし結果を返す。"""
+
+        await websocket.accept()
+        audio_buffer = bytearray()
+
+        try:
+            while True:
+                message = await websocket.receive()
+                data = message.get("bytes")
+                if data:
+                    audio_buffer.extend(data)
+                    continue
+
+                text = message.get("text")
+                if text is None:
+                    continue
+
+                if text.lower() in {"done", "finish", "close"}:
+                    break
+        except WebSocketDisconnect:
+            return
+        except Exception as exc:  # noqa: BLE001 - 予期せぬ障害はクライアントへ通知する
+            logger.exception("WebSocket受信中にエラーが発生しました")
+            await websocket.send_json({"error": f"受信中にエラーが発生しました: {exc}"})
+            await websocket.close(code=1011)
+            return
+
+        if not audio_buffer:
+            await websocket.send_json({"error": "音声データが送信されていません。"})
+            await websocket.close(code=1007)
+            return
+
+        try:
+            results = await asyncio.to_thread(
+                transcribe_all_bytes,
+                [bytes(audio_buffer)],
+                model_name=model or DEFAULT_MODEL_NAME,
+                language=language or DEFAULT_LANGUAGE,
+                task=task,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("WebSocket書き起こし中にエラーが発生しました")
+            await websocket.send_json({"error": "書き起こしに失敗しました。"})
+            await websocket.close(code=1011)
+            return
+
+        if not results:
+            await websocket.send_json({"error": "書き起こし結果が空でした。"})
+            await websocket.close(code=1011)
+            return
+
+        await websocket.send_json(results[0].model_dump())
+        await websocket.close(code=1000)
 
     return app
 
