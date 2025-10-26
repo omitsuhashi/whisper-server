@@ -39,11 +39,11 @@ def load_pipeline(opt: DiarizeOptions) -> PyannotePipeline:
         pipeline = _PyannotePipeline.from_pretrained(opt.model_name, token=token)  # pyannote>=3.1
     except TypeError:
         pipeline = _PyannotePipeline.from_pretrained(opt.model_name)  # 旧署名
-    device = _resolve_device(opt)
-    try:
-        pipeline.to(device)  # type: ignore[attr-defined]
-    except Exception:  # pragma: no cover - device transfer best effort
-        pass
+    import torch as _torch
+
+    device_name = _resolve_device(opt)
+    device = _torch.device(device_name)
+    pipeline.to(device)  # type: ignore[attr-defined]
     return pipeline
 
 

@@ -1,7 +1,11 @@
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
-from src.lib.diarize.pipeline import annotation_to_turns
+import torch
+
+from src.lib.diarize.pipeline import annotation_to_turns, load_pipeline
+from src.lib.diarize.options import DiarizeOptions
 
 
 class FakeAnnotation:
@@ -41,6 +45,28 @@ class AnnotationToTurnsTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             annotation_to_turns(object())
 
+
+class LoadPipelineTests(unittest.TestCase):
+    @mock.patch("src.lib.diarize.pipeline._resolve_token", return_value="dummy")
+    @mock.patch("src.lib.diarize.pipeline._resolve_device", return_value="mps")
+    @mock.patch("src.lib.diarize.pipeline._PyannotePipeline")
+    def test_load_pipeline_uses_torch_device(
+        self,
+        mock_pipeline_cls: mock.Mock,
+        _mock_resolve_device: mock.Mock,
+        _mock_resolve_token: mock.Mock,
+    ) -> None:
+        pipeline_instance = mock.Mock()
+        mock_pipeline_cls.from_pretrained.return_value = pipeline_instance
+
+        result = load_pipeline(DiarizeOptions())
+
+        self.assertIs(result, pipeline_instance)
+        mock_pipeline_cls.from_pretrained.assert_called_once()
+        pipeline_instance.to.assert_called_once()
+        (device_arg,) = pipeline_instance.to.call_args.args
+        self.assertIsInstance(device_arg, torch.device)
+        self.assertEqual(device_arg.type, "mps")
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
