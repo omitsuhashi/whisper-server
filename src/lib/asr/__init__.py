@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-__all__ = [
+if TYPE_CHECKING:  # pragma: no cover - 型チェッカー向けの擬似インポート
+    from src.lib.asr.main import transcribe_all, transcribe_all_bytes
+    from src.lib.asr.models import TranscriptionResult, TranscriptionSegment
+    from src.lib.asr.options import TranscribeOptions
+
+__all__ = (
     "TranscribeOptions",
     "TranscriptionResult",
     "TranscriptionSegment",
     "transcribe_all",
     "transcribe_all_bytes",
-]
+)
 
 
 def __getattr__(name: str) -> Any:

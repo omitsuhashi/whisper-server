@@ -13,7 +13,7 @@ Japanese
 - `make cli-files AUDIO="audio.wav" MODEL=medium` : 指定ファイルを CLI パイプラインで書き起こします。
 - `make cli-stream MODEL=small LANGUAGE=ja` : 標準入力からの音声ストリームを逐次処理します。
 - `make audio-streaming DEVICE=:1` : macOS の入力デバイスを `ffmpeg` で録音しながら CLI ストリームへパイプします。
-- `uvicorn src.cmd.http:create_app --reload --port 8000` : HTTP/WebSocket API をホットリロード付きで起動します。
+- `uvicorn src.cmd.http:create_app --reload --port 8000` : HTTP API をホットリロード付きで起動します。
 - `make test` または `python -m unittest discover -s tests` : 回帰テストを実行します。
 
 ## Coding Style & Naming Conventions

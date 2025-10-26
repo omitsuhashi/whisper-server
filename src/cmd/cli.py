@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import shutil
 import sys
 import time
@@ -18,6 +17,7 @@ if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対�
 import cv2
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
+from src.config.logging import setup_logging
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -242,7 +242,7 @@ def run_cli(
 ) -> list["TranscriptionResult"] | list[FrameExtractionResult] | list["DiarizationResult"]:
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    setup_logging(args.log_level)
 
     if args.command == "frames":
         return _extract_frames(args)

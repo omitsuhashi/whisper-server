@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
+from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     """FastAPIアプリケーションを構築して返す。"""
 
+    setup_logging()
     app = FastAPI(title="mlx Whisper ASR")
 
     @app.get("/healthz")
