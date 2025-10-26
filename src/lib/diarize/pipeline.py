@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 
 from .models import SpeakerTurn
 from .options import DiarizeOptions
@@ -16,20 +16,29 @@ except Exception:  # pragma: no cover - torch optional at import time
     _MPS_OK = False
 
 # ---- pyannote ----
-try:
-    from pyannote.audio import Pipeline  # type: ignore
+try:  # pragma: no cover - 依存がない環境では失敗させない
+    from pyannote.audio import Pipeline as _PyannotePipeline  # type: ignore
+    _pyannote_import_error: Exception | None = None
 except Exception as e:  # pragma: no cover
-    raise RuntimeError(
-        "pyannote.audio が見つかりません。`pip install 'pyannote.audio>=3.1,<3.3' torch torchaudio soundfile` を実行してください。"
-    ) from e
+    _PyannotePipeline = None
+    _pyannote_import_error = e
+
+if TYPE_CHECKING:  # pragma: no cover
+    from pyannote.audio import Pipeline as PyannotePipeline  # type: ignore[import]
+else:
+    PyannotePipeline = Any
 
 
-def load_pipeline(opt: DiarizeOptions) -> Pipeline:
+def load_pipeline(opt: DiarizeOptions) -> PyannotePipeline:
+    if _PyannotePipeline is None:
+        raise RuntimeError(
+            "pyannote.audio が見つかりません。`pip install 'pyannote.audio>=3.1,<3.3' torch torchaudio soundfile` を実行してください。"
+        ) from _pyannote_import_error
     token = _resolve_token(opt)
     try:
-        pipeline = Pipeline.from_pretrained(opt.model_name, token=token)  # pyannote>=3.1
+        pipeline = _PyannotePipeline.from_pretrained(opt.model_name, token=token)  # pyannote>=3.1
     except TypeError:
-        pipeline = Pipeline.from_pretrained(opt.model_name, use_auth_token=token)  # 旧署名
+        pipeline = _PyannotePipeline.from_pretrained(opt.model_name)  # 旧署名
     device = _resolve_device(opt)
     try:
         pipeline.to(device)  # type: ignore[attr-defined]

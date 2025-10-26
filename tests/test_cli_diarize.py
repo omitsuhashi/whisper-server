@@ -1,27 +1,73 @@
 import io
 import unittest
+from dataclasses import dataclass, field
 from contextlib import redirect_stdout
+from typing import List
 from unittest import mock
 
 from src.cmd import cli
-from src.lib.asr import TranscriptionResult
-from src.lib.diarize import (
-    DiarizationResult,
-    SpeakerAnnotatedTranscript,
-    SpeakerSegment,
-    SpeakerTurn,
-)
+
+
+@dataclass
+class FakeSegment:
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
+class FakeTranscriptionResult:
+    filename: str
+    text: str
+    language: str | None = None
+    segments: List[FakeSegment] = field(default_factory=list)
+
+
+@dataclass
+class FakeSpeakerSegment(FakeSegment):
+    speaker: str
+
+
+@dataclass
+class FakeSpeakerAnnotatedTranscript:
+    filename: str
+    segments: List[FakeSpeakerSegment]
+
+    @property
+    def speakers(self) -> List[str]:
+        return sorted({segment.speaker for segment in self.segments})
+
+
+@dataclass
+class FakeSpeakerTurn:
+    start: float
+    end: float
+    speaker: str
+
+
+@dataclass
+class FakeDiarizationResult:
+    filename: str
+    turns: List[FakeSpeakerTurn]
+
+    @property
+    def speakers(self) -> List[str]:
+        return sorted({turn.speaker for turn in self.turns})
+
+
+class FakeDiarizeOptions:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class CLIDiarizeTests(unittest.TestCase):
-    @mock.patch("src.cmd.cli.attach_speaker_labels")
-    @mock.patch("src.cmd.cli.diarize_all")
-    @mock.patch("src.cmd.cli.transcribe_all")
+    @mock.patch("src.cmd.cli._load_diarize_components")
+    @mock.patch("src.cmd.cli._load_asr_components")
     def test_run_cli_with_diarize_option(
         self,
-        mock_transcribe_all: mock.Mock,
-        mock_diarize_all: mock.Mock,
-        mock_attach: mock.Mock,
+        mock_load_asr: mock.Mock,
+        mock_load_diarize: mock.Mock,
     ) -> None:
         args = cli.parse_args(
             [
@@ -33,22 +79,32 @@ class CLIDiarizeTests(unittest.TestCase):
             ]
         )
 
-        transcription = TranscriptionResult(filename="sample.wav", text="hello")
-        mock_transcribe_all.return_value = [transcription]
-
-        diarization = DiarizationResult(
-            filename="sample.wav",
-            turns=[SpeakerTurn(start=0.0, end=1.0, speaker="S0")],
+        transcription = FakeTranscriptionResult(filename="sample.wav", text="hello")
+        mock_transcribe_all = mock.Mock(return_value=[transcription])
+        mock_transcribe_all_bytes = mock.Mock()
+        mock_load_asr.return_value = (
+            FakeTranscriptionResult,
+            mock_transcribe_all,
+            mock_transcribe_all_bytes,
         )
-        mock_diarize_all.return_value = [diarization]
 
-        annotated = SpeakerAnnotatedTranscript(
+        diarization = FakeDiarizationResult(
+            filename="sample.wav",
+            turns=[FakeSpeakerTurn(start=0.0, end=1.0, speaker="S0")],
+        )
+        mock_diarize_all = mock.Mock(return_value=[diarization])
+        annotated = FakeSpeakerAnnotatedTranscript(
             filename="sample.wav",
             segments=[
-                SpeakerSegment(start=0.0, end=1.0, text="hello", speaker="S0"),
+                FakeSpeakerSegment(start=0.0, end=1.0, text="hello", speaker="S0"),
             ],
         )
-        mock_attach.return_value = annotated
+        mock_attach = mock.Mock(return_value=annotated)
+        mock_load_diarize.return_value = (
+            FakeDiarizeOptions,
+            mock_attach,
+            mock_diarize_all,
+        )
 
         results = cli.run_cli(args)
 
@@ -64,31 +120,43 @@ class CLIDiarizeTests(unittest.TestCase):
         self.assertIs(args._speaker_transcripts["sample.wav"], annotated)  # type: ignore[index]
         self.assertIn("sample.wav", args._diarization_results)  # type: ignore[attr-defined]
 
-    @mock.patch("src.cmd.cli.attach_speaker_labels")
-    @mock.patch("src.cmd.cli.diarize_all")
-    @mock.patch("src.cmd.cli.transcribe_all")
+    @mock.patch("src.cmd.cli._load_diarize_components")
+    @mock.patch("src.cmd.cli._load_asr_components")
     def test_main_prints_speaker_segments(
         self,
-        mock_transcribe_all: mock.Mock,
-        mock_diarize_all: mock.Mock,
-        mock_attach: mock.Mock,
+        mock_load_asr: mock.Mock,
+        mock_load_diarize: mock.Mock,
     ) -> None:
-        transcription = TranscriptionResult(filename="sample.wav", text="こんにちは")
-        mock_transcribe_all.return_value = [transcription]
-
-        diarization = DiarizationResult(
+        transcription = FakeTranscriptionResult(
             filename="sample.wav",
-            turns=[SpeakerTurn(start=0.0, end=1.0, speaker="S1")],
+            text="こんにちは",
+            segments=[FakeSegment(start=0.0, end=1.0, text="こんにちは")],
         )
-        mock_diarize_all.return_value = [diarization]
+        mock_transcribe_all = mock.Mock(return_value=[transcription])
+        mock_transcribe_all_bytes = mock.Mock()
+        mock_load_asr.return_value = (
+            FakeTranscriptionResult,
+            mock_transcribe_all,
+            mock_transcribe_all_bytes,
+        )
 
-        annotated = SpeakerAnnotatedTranscript(
+        diarization = FakeDiarizationResult(
+            filename="sample.wav",
+            turns=[FakeSpeakerTurn(start=0.0, end=1.0, speaker="S1")],
+        )
+        mock_diarize_all = mock.Mock(return_value=[diarization])
+        annotated = FakeSpeakerAnnotatedTranscript(
             filename="sample.wav",
             segments=[
-                SpeakerSegment(start=0.0, end=1.0, text="こんにちは", speaker="S1"),
+                FakeSpeakerSegment(start=0.0, end=1.0, text="こんにちは", speaker="S1"),
             ],
         )
-        mock_attach.return_value = annotated
+        mock_attach = mock.Mock(return_value=annotated)
+        mock_load_diarize.return_value = (
+            FakeDiarizeOptions,
+            mock_attach,
+            mock_diarize_all,
+        )
 
         buf = io.StringIO()
         with redirect_stdout(buf):

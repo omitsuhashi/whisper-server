@@ -1,7 +1,11 @@
 PYTHON ?= python3
 CLI := $(PYTHON) -m src.cmd.cli
+UVICORN := $(PYTHON) -m uvicorn
+HTTP_HOST ?= 127.0.0.1
+HTTP_PORT ?= 8000
+HTTP_RELOAD ?= 1
 
-.PHONY: help cli cli-help cli-files cli-stream audio-streaming test shell
+.PHONY: help cli cli-help cli-files cli-stream audio-streaming http test shell
 
 help:
 	@echo "Available targets:"
@@ -12,6 +16,8 @@ help:
 	@echo "                               # 標準入力経由でストリーム書き起こし (音声バイトをパイプで供給すること)"
 	@echo "  make audio-streaming [DEVICE=idx] [SECONDS=] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # ffmpeg でマイク録音→CLI ストリームへパイプ"
+	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=0|1]"
+	@echo "                               # FastAPI サーバーを uvicorn で起動"
 
 cli:
 	$(CLI)
@@ -53,6 +59,12 @@ audio-streaming:
 	echo "ffmpeg -hide_banner -loglevel error -f avfoundation -i $${DEVICE_VAL} -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS"; \
 	ffmpeg -hide_banner -loglevel error -f avfoundation -i "$${DEVICE_VAL}" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - \
 		| $(CLI) stream $$FLAGS
+
+http:
+	@RELOAD_FLAG=""; \
+	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
+	echo "$(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT)"; \
+	$(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT)
 
 test:
 	$(PYTHON) -m unittest discover -s tests

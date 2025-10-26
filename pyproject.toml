@@ -15,4 +15,5 @@ dependencies = [
     "torch==2.9.0",
     "torchaudio==2.9.0",
     "torchcodec==0.8.0",
+    "opencv-python-headless==4.10.0.84",
 ]

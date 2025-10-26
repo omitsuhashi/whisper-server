@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, List, Sequence, TYPE_CHECKING
 
 # 直接スクリプトとして実行された場合でも src パッケージを解決できるようにする
 if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対応
@@ -13,16 +15,29 @@ if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対�
     if str(project_root) not in sys.path:
         sys.path.append(str(project_root))
 
+import cv2
+
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
-from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
-from src.lib.diarize import (
-    DiarizeOptions,
-    SpeakerAnnotatedTranscript,
-    attach_speaker_labels,
-    diarize_all,
-)
+from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
+
+if TYPE_CHECKING:  # pragma: no cover
+    from src.lib.asr import TranscriptionResult
+    from src.lib.diarize import SpeakerAnnotatedTranscript
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
+
+
+@dataclass(frozen=True)
+class SavedFrameInfo:
+    path: Path
+    frame_index: int
+    timestamp: float
+
+
+@dataclass(frozen=True)
+class FrameExtractionResult:
+    video: Path
+    frames: List[SavedFrameInfo]
 
 
 def _read_stream(buffer: Iterable[bytes]) -> Iterable[bytes]:
@@ -123,19 +138,69 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
+    frames_parser = subparsers.add_parser(
+        "frames",
+        help="動画から代表フレームを抽出する",
+    )
+    frames_parser.add_argument("video", nargs="+", help="分析対象の動画ファイルパス")
+    frames_parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="抽出フレームを書き出すディレクトリ（既定: 各動画の <名前>_frames）",
+    )
+    frames_parser.add_argument(
+        "--min-scene-span",
+        type=float,
+        default=1.0,
+        help="同一シーンとみなす最小間隔（秒）。値を小さくすると細かい切替も検出します。",
+    )
+    frames_parser.add_argument(
+        "--diff-threshold",
+        type=float,
+        default=0.3,
+        help="ヒストグラム距離の閾値（0〜1）。小さいほど厳密、値を大きくすると変化を拾いやすくなります。",
+    )
+    frames_parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="最大抽出枚数。指定しない場合はすべての変化を保存します。",
+    )
+    frames_parser.add_argument(
+        "--image-format",
+        default="png",
+        choices=["png", "jpg", "jpeg", "bmp"],
+        help="保存する画像形式。",
+    )
+    frames_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="既存の出力先が存在する場合に上書きします。",
+    )
+    frames_parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
+    )
+
     subparsers.required = False
     parser.set_defaults(command="files")
 
-    if argv and argv[0] not in {"files", "stream"}:
+    if argv and argv[0] not in {"files", "stream", "frames"}:
         argv = ["files", *argv]
 
     return parser.parse_args(argv)
 
 
-def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
+def run_cli(args: argparse.Namespace) -> list["TranscriptionResult"] | list[FrameExtractionResult]:
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+
+    if args.command == "frames":
+        return _extract_frames(args)
+
+    _, transcribe_all_fn, transcribe_all_bytes_fn = _load_asr_components()
 
     model_name = args.model or DEFAULT_MODEL_NAME
     language = args.language or DEFAULT_LANGUAGE
@@ -158,12 +223,13 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
                 name=args.name,
                 chunk_size=chunk_size,
                 interval=interval,
+                transcribe_all_bytes_fn=transcribe_all_bytes_fn,
             )
 
         audio_bytes = sys.stdin.buffer.read()
         if not audio_bytes:
             raise ValueError("標準入力から音声データを読み取れませんでした。")
-        return transcribe_all_bytes(
+        return transcribe_all_bytes_fn(
             [audio_bytes],
             model_name=model_name,
             language=language,
@@ -171,7 +237,7 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
             names=[args.name],
         )
 
-    results = transcribe_all(
+    results = transcribe_all_fn(
         args.audio,
         model_name=model_name,
         language=language,
@@ -179,7 +245,8 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
     )
 
     if getattr(args, "diarize", False):
-        diarize_options = DiarizeOptions(
+        (DiarizeOptionsCls, attach_speaker_labels_fn, diarize_all_fn) = _load_diarize_components()
+        diarize_options = DiarizeOptionsCls(
             token=args.diarize_token,
             num_speakers=args.diarize_num_speakers,
             min_speakers=args.diarize_min_speakers,
@@ -187,18 +254,99 @@ def run_cli(args: argparse.Namespace) -> list[TranscriptionResult]:
             device=args.diarize_device,
             require_mps=args.diarize_require_mps,
         )
-        diarization_results = diarize_all(args.audio, options=diarize_options)
+        diarization_results = diarize_all_fn(args.audio, options=diarize_options)
         diarization_map = {dr.filename: dr for dr in diarization_results}
-        speaker_transcripts: dict[str, SpeakerAnnotatedTranscript] = {}
+        speaker_transcripts: dict[str, Any] = {}
         for result in results:
             diar = diarization_map.get(result.filename)
             if diar is None:
                 raise RuntimeError(f"話者分離結果が見つかりませんでした: {result.filename}")
-            speaker_transcripts[result.filename] = attach_speaker_labels(result, diar)
+            speaker_transcripts[result.filename] = attach_speaker_labels_fn(result, diar)
         args._speaker_transcripts = speaker_transcripts  # type: ignore[attr-defined]
         args._diarization_results = diarization_map  # type: ignore[attr-defined]
 
     return results
+
+
+def _load_diarize_components():
+    from src.lib.diarize import (
+        DiarizeOptions,
+        attach_speaker_labels,
+        diarize_all,
+    )
+
+    return DiarizeOptions, attach_speaker_labels, diarize_all
+
+
+def _load_asr_components():
+    from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
+
+    return TranscriptionResult, transcribe_all, transcribe_all_bytes
+
+
+def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
+    base_output = Path(args.output_dir) if args.output_dir else None
+    if base_output:
+        base_output.mkdir(parents=True, exist_ok=True)
+
+    video_paths = [Path(p) for p in args.video]
+    outputs: list[FrameExtractionResult] = []
+
+    for video_path in video_paths:
+        frames = sample_key_frames(
+            video_path,
+            min_scene_span=float(args.min_scene_span),
+            diff_threshold=float(args.diff_threshold),
+            max_frames=int(args.max_frames) if args.max_frames is not None else None,
+        )
+        target_dir = _resolve_output_dir(video_path, base_output, len(video_paths))
+        if target_dir.exists():
+            if args.overwrite:
+                shutil.rmtree(target_dir)
+            else:
+                raise FrameSamplingError(f"出力先が既に存在します: {target_dir}")
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_frames: list[SavedFrameInfo] = []
+        extension = _normalize_extension(args.image_format)
+        for sequence_index, frame in enumerate(frames):
+            file_name = _build_frame_filename(video_path.stem, frame, sequence_index, extension)
+            output_path = target_dir / file_name
+            if not cv2.imwrite(str(output_path), frame.image):
+                raise FrameSamplingError(f"フレームを書き込めませんでした: {output_path}")
+            saved_frames.append(
+                SavedFrameInfo(
+                    path=output_path,
+                    frame_index=frame.index,
+                    timestamp=frame.timestamp,
+                )
+            )
+        outputs.append(FrameExtractionResult(video=video_path, frames=saved_frames))
+
+    return outputs
+
+
+def _resolve_output_dir(video_path: Path, base_output: Path | None, total_videos: int) -> Path:
+    if base_output is None:
+        return video_path.parent / f"{video_path.stem}_frames"
+    if total_videos == 1:
+        return base_output
+    return base_output / video_path.stem
+
+
+def _normalize_extension(fmt: str) -> str:
+    fmt_lower = fmt.lower()
+    if fmt_lower in {"jpg", "jpeg"}:
+        return "jpg"
+    if fmt_lower == "bmp":
+        return "bmp"
+    return "png"
+
+
+def _build_frame_filename(prefix: str, frame: SampledFrame, sequence_index: int, extension: str) -> str:
+    timestamp_ms = int(round(frame.timestamp * 1000))
+    frame_suffix = f"{frame.index:06d}_{sequence_index:04d}"
+    return f"{prefix}_{timestamp_ms:08d}_{frame_suffix}.{extension}"
 
 
 def _streaming_transcription(
@@ -209,7 +357,8 @@ def _streaming_transcription(
     name: str,
     chunk_size: int,
     interval: float,
-) -> list[TranscriptionResult]:
+    transcribe_all_bytes_fn,
+) -> list["TranscriptionResult"]:
     """標準入力からのストリームを一定間隔で書き起こして標準出力へ追記する。"""
 
     stdin_buffer = sys.stdin.buffer
@@ -225,7 +374,7 @@ def _streaming_transcription(
         if not force and (time.monotonic() - last_flush) < interval:
             return
 
-        current_results = transcribe_all_bytes(
+        current_results = transcribe_all_bytes_fn(
             [bytes(audio_buffer)],
             model_name=model_name,
             language=language,
@@ -270,12 +419,25 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         results = run_cli(args)
     except Exception as exc:  # noqa: BLE001 - CLIからはエラーをそのまま通知する
+        if args.command == "frames":
+            raise SystemExit(f"フレーム抽出に失敗しました: {exc}") from exc
         raise SystemExit(f"書き起こしに失敗しました: {exc}") from exc
 
-    for result in results:
+    if args.command == "frames":
+        for extraction in results:  # type: ignore[assignment]
+            print("=== 動画:", extraction.video)
+            if not extraction.frames:
+                print("フレームが抽出されませんでした。")
+                continue
+            for frame in extraction.frames:
+                print(f"[{frame.timestamp:.2f}s / #{frame.frame_index}] -> {frame.path}")
+            print()
+        return
+
+    for result in results:  # type: ignore[assignment]
         print("=== ファイル:", result.filename)
         print("言語:", result.language or "不明")
-        speaker_map: dict[str, SpeakerAnnotatedTranscript] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
+        speaker_map: dict[str, Any] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
         diar_map = getattr(args, "_diarization_results", {})
         speaker_transcript = speaker_map.get(result.filename) if speaker_map else None
         diar_result = diar_map.get(result.filename) if diar_map else None

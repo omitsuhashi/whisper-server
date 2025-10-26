@@ -113,10 +113,16 @@ class CliStreamTests(unittest.TestCase):
             self.skipTest("ffmpeg が見つかりません")
         self.audio_bytes = _generate_wav_bytes()
 
-    @mock.patch.object(cli, "transcribe_all_bytes")
-    def test_stream_subcommand_uses_stdin_payload(self, mock_transcribe_bytes: mock.Mock) -> None:
+    @mock.patch("src.cmd.cli._load_asr_components")
+    def test_stream_subcommand_uses_stdin_payload(self, mock_load_asr: mock.Mock) -> None:
         fake_result = TranscriptionResult(filename="stdin", text="hello")
-        mock_transcribe_bytes.return_value = [fake_result]
+        mock_transcribe_all = mock.Mock()
+        mock_transcribe_bytes = mock.Mock(return_value=[fake_result])
+        mock_load_asr.return_value = (
+            TranscriptionResult,
+            mock_transcribe_all,
+            mock_transcribe_bytes,
+        )
 
         fake_stdin = FakeStdin(self.audio_bytes)
         original_stdin = cli.sys.stdin
@@ -135,13 +141,19 @@ class CliStreamTests(unittest.TestCase):
         self.assertEqual(results, [fake_result])
         self.assertFalse(getattr(args, "_stream_output", False))
 
-    @mock.patch.object(cli, "transcribe_all_bytes")
+    @mock.patch("src.cmd.cli._load_asr_components")
     def test_stream_subcommand_with_interval_streams_output(
-        self, mock_transcribe_bytes: mock.Mock
+        self, mock_load_asr: mock.Mock
     ) -> None:
         first = TranscriptionResult(filename="stdin", text="こ")
         second = TranscriptionResult(filename="stdin", text="こんにちは")
-        mock_transcribe_bytes.side_effect = [[first], [second], [second]]
+        mock_transcribe_all = mock.Mock()
+        mock_transcribe_bytes = mock.Mock(side_effect=[[first], [second], [second]])
+        mock_load_asr.return_value = (
+            TranscriptionResult,
+            mock_transcribe_all,
+            mock_transcribe_bytes,
+        )
 
         fake_audio = b"abcdwxyz"
         fake_stdin = FakeStdin(fake_audio)

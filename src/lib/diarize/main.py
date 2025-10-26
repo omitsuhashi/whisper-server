@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
+import torch
 
 from ..audio import AudioDecodeError, coerce_to_bytes, decode_audio_bytes
 from .formats import save_json_diarization, save_rttm, save_srt_with_speaker
@@ -26,10 +27,11 @@ def diarize_file(audio_path: str | Path, *, options: Optional[DiarizeOptions] = 
     path = str(Path(audio_path))
 
     waveform = _decode_audio_file(path, opt, context="diarize_file")
-    annotation = pipeline({"waveform": waveform, "sample_rate": opt.sample_rate}, **build_diarization_kwargs(opt))
+    waveform_tensor = _to_waveform_tensor(waveform)
+    annotation = pipeline({"waveform": waveform_tensor, "sample_rate": opt.sample_rate}, **build_diarization_kwargs(opt))
     turns = annotation_to_turns(annotation)
 
-    duration = float(len(waveform) / opt.sample_rate)
+    duration = float(waveform_tensor.shape[-1] / opt.sample_rate)
     return DiarizationResult(filename=Path(path).name, duration=duration, turns=turns)
 
 
@@ -48,9 +50,10 @@ def diarize_waveform(
     if waveform.ndim > 1:
         waveform = np.mean(waveform, axis=-1)
 
-    annotation = pipeline({"waveform": waveform, "sample_rate": sample_rate}, **build_diarization_kwargs(opt))
+    waveform_tensor = _to_waveform_tensor(waveform)
+    annotation = pipeline({"waveform": waveform_tensor, "sample_rate": sample_rate}, **build_diarization_kwargs(opt))
     turns = annotation_to_turns(annotation)
-    duration = float(len(waveform) / sample_rate)
+    duration = float(waveform_tensor.shape[-1] / sample_rate)
     return DiarizationResult(filename=str(display_name), duration=duration, turns=turns)
 
 
@@ -69,9 +72,10 @@ def diarize_all(
     for audio_path in audio_paths:
         resolved = str(Path(audio_path))
         waveform = _decode_audio_file(resolved, opt, context="diarize_file")
-        annotation = pipeline({"waveform": waveform, "sample_rate": opt.sample_rate}, **kwargs)
+        waveform_tensor = _to_waveform_tensor(waveform)
+        annotation = pipeline({"waveform": waveform_tensor, "sample_rate": opt.sample_rate}, **kwargs)
         turns = annotation_to_turns(annotation)
-        duration = float(len(waveform) / opt.sample_rate)
+        duration = float(waveform_tensor.shape[-1] / opt.sample_rate)
         results.append(DiarizationResult(filename=Path(resolved).name, duration=duration, turns=turns))
     return results
 
@@ -99,9 +103,10 @@ def diarize_all_bytes(
         except AudioDecodeError as exc:
             raise _translate_decode_error("diarize_bytes", exc) from exc
 
-        annotation = pipeline({"waveform": waveform, "sample_rate": sample_rate}, **kwargs)
+        waveform_tensor = _to_waveform_tensor(waveform)
+        annotation = pipeline({"waveform": waveform_tensor, "sample_rate": sample_rate}, **kwargs)
         turns = annotation_to_turns(annotation)
-        duration = float(len(waveform) / sample_rate)
+        duration = float(waveform_tensor.shape[-1] / sample_rate)
         results.append(DiarizationResult(filename=display_name, duration=duration, turns=turns))
     return results
 
@@ -130,6 +135,22 @@ def _decode_audio_file(path: str, opt: DiarizeOptions, *, context: str = "diariz
         return decode_audio_bytes(audio_bytes, sample_rate=opt.sample_rate)
     except AudioDecodeError as exc:
         raise _translate_decode_error(context, exc) from exc
+
+
+def _to_waveform_tensor(waveform: np.ndarray) -> torch.Tensor:
+    """Convert numpy waveform (mono) into (channel, time) torch Tensor expected by pyannote."""
+
+    if waveform.ndim == 1:
+        expanded = waveform[np.newaxis, :]
+    elif waveform.ndim == 2:
+        expanded = waveform
+    else:
+        raise ValueError(f"Unexpected waveform shape: {waveform.shape}")
+
+    if expanded.dtype != np.float32:
+        expanded = expanded.astype(np.float32)
+
+    return torch.from_numpy(expanded)
 
 
 __all__ = [
