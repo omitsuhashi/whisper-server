@@ -6,15 +6,12 @@ from typing import Any, Dict, List
 from .models import SpeakerTurn
 from .options import DiarizeOptions
 
+
 # ---- Torch (MPS) ----
 try:
     import torch  # type: ignore
 
     _MPS_OK = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-    try:
-        torch.set_float32_matmul_precision("high")  # 古いtorchではno-op
-    except Exception:  # pragma: no cover - best-effort call
-        pass
 except Exception:  # pragma: no cover - torch optional at import time
     _MPS_OK = False
 

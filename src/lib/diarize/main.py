@@ -25,10 +25,12 @@ def diarize_file(audio_path: str | Path, *, options: Optional[DiarizeOptions] = 
     pipeline = load_pipeline(opt)
     path = str(Path(audio_path))
 
-    annotation = pipeline(path, **build_diarization_kwargs(opt))
+    waveform = _decode_audio_file(path, opt, context="diarize_file")
+    annotation = pipeline({"waveform": waveform, "sample_rate": opt.sample_rate}, **build_diarization_kwargs(opt))
     turns = annotation_to_turns(annotation)
 
-    return DiarizationResult(filename=Path(path).name, duration=None, turns=turns)
+    duration = float(len(waveform) / opt.sample_rate)
+    return DiarizationResult(filename=Path(path).name, duration=duration, turns=turns)
 
 
 def diarize_waveform(
@@ -66,9 +68,11 @@ def diarize_all(
     results: List[DiarizationResult] = []
     for audio_path in audio_paths:
         resolved = str(Path(audio_path))
-        annotation = pipeline(resolved, **kwargs)
+        waveform = _decode_audio_file(resolved, opt, context="diarize_file")
+        annotation = pipeline({"waveform": waveform, "sample_rate": opt.sample_rate}, **kwargs)
         turns = annotation_to_turns(annotation)
-        results.append(DiarizationResult(filename=Path(resolved).name, turns=turns))
+        duration = float(len(waveform) / opt.sample_rate)
+        results.append(DiarizationResult(filename=Path(resolved).name, duration=duration, turns=turns))
     return results
 
 
@@ -113,6 +117,19 @@ def _translate_decode_error(context: str, exc: AudioDecodeError) -> RuntimeError
     if exc.kind == "empty-input":
         return RuntimeError(f"音声データが空でした（{context}）。")
     return RuntimeError(f"音声デコードに失敗しました（{context}）。")
+
+
+def _decode_audio_file(path: str, opt: DiarizeOptions, *, context: str = "diarize_file") -> np.ndarray:
+    try:
+        audio_bytes = Path(path).read_bytes()
+    except FileNotFoundError as exc:  # pragma: no cover - エラー伝播
+        raise FileNotFoundError(f"音声ファイルが見つかりません: {path}") from exc
+    except OSError as exc:  # pragma: no cover - 読み込み失敗
+        raise RuntimeError(f"音声ファイルを読み込めませんでした（{path}）: {exc}") from exc
+    try:
+        return decode_audio_bytes(audio_bytes, sample_rate=opt.sample_rate)
+    except AudioDecodeError as exc:
+        raise _translate_decode_error(context, exc) from exc
 
 
 __all__ = [
