@@ -57,25 +57,38 @@ def build_diarization_kwargs(opt: DiarizeOptions) -> Dict[str, int]:
 
 
 def annotation_to_turns(annotation: Any) -> List[SpeakerTurn]:
+    """
+    pyannote.audio 3.x は `Annotation` を、4.x は `DiarizeOutput` を返す。
+    どちらの場合でも `speaker_diarization` に含まれるトラックを抽出する。
+    """
+
+    if hasattr(annotation, "speaker_diarization"):
+        source = annotation.speaker_diarization
+    else:
+        source = annotation
+
+    if not hasattr(source, "itertracks"):
+        raise TypeError(f"サポートされていない話者分離結果: {type(annotation)!r}")
+
     turns = [
         SpeakerTurn(start=float(turn.start), end=float(turn.end), speaker=str(speaker))
-        for turn, _, speaker in annotation.itertracks(yield_label=True)
+        for turn, _, speaker in source.itertracks(yield_label=True)
     ]
     turns.sort(key=lambda t: (t.start, t.end))
     return turns
 
 
 def _resolve_device(opt: DiarizeOptions) -> str:
-    if opt.device:
-        return opt.device
-    if _MPS_OK:
-        return "mps"
-    if opt.require_mps:
+    if opt.device not in (None, "mps"):
         raise RuntimeError(
-            "MPS (Metal) が利用できません。Apple Silicon + PyTorch(MPS対応) が必要です。"
-            " Intel Mac／MPS非対応環境では DiarizeOptions(require_mps=False) で CPU 実行へ切替えてください。"
+            f"この構成では MPS (Metal) のみサポートしています。指定されたデバイス: {opt.device!r}"
         )
-    return "cpu"
+    if not _MPS_OK:
+        raise RuntimeError(
+            "MPS (Metal) が利用できません。PyTorch を MPS 対応ビルドに更新するか、"
+            "macOS 側で Metal が利用可能な環境を用意してください。"
+        )
+    return "mps"
 
 
 def _resolve_token(opt: DiarizeOptions) -> str:

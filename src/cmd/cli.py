@@ -22,7 +22,7 @@ from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.lib.asr import TranscriptionResult
-    from src.lib.diarize import SpeakerAnnotatedTranscript
+    from src.lib.diarize import DiarizationResult, SpeakerAnnotatedTranscript
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
 
@@ -102,17 +102,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     file_parser.add_argument(
         "--diarize-device",
         default=None,
-        help="話者分離を実行するデバイス（例: mps / cpu / cuda）",
+        help="話者分離を実行するデバイス（mps のみサポート）",
     )
     file_parser.add_argument(
         "--diarize-token",
         default=None,
         help="Hugging Face のアクセストークン（未指定時は環境変数から探索）",
-    )
-    file_parser.add_argument(
-        "--diarize-require-mps",
-        action="store_true",
-        help="MPS (Metal) が利用できない場合は失敗させる",
     )
 
     stream_parser = subparsers.add_parser(
@@ -183,22 +178,77 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
     )
 
+    diarize_parser = subparsers.add_parser(
+        "diarize",
+        help="音声ファイルに話者分離のみを実行する",
+    )
+    diarize_parser.add_argument("audio", nargs="+", help="話者分離を行う音声ファイルパス")
+    diarize_parser.add_argument(
+        "--token",
+        default=None,
+        help="Hugging Face のアクセストークン（未指定時は環境変数から探索）",
+    )
+    diarize_parser.add_argument(
+        "--num-speakers",
+        type=int,
+        default=None,
+        help="想定話者数（指定すると安定する場合があります）",
+    )
+    diarize_parser.add_argument(
+        "--min-speakers",
+        type=int,
+        default=None,
+        help="想定最小話者数",
+    )
+    diarize_parser.add_argument(
+        "--max-speakers",
+        type=int,
+        default=None,
+        help="想定最大話者数",
+    )
+    diarize_parser.add_argument(
+        "--device",
+        default=None,
+        help="話者分離を実行するデバイス（mps のみサポート）",
+    )
+    diarize_parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=16000,
+        help="デコード時に使用するサンプルレート（既定: 16000 Hz）",
+    )
+    diarize_parser.add_argument(
+        "--show-turns",
+        action="store_true",
+        help="話者区間を詳細表示する",
+    )
+    diarize_parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
+    )
+
     subparsers.required = False
     parser.set_defaults(command="files")
 
-    if argv and argv[0] not in {"files", "stream", "frames"}:
+    if argv and argv[0] not in {"files", "stream", "frames", "diarize"}:
         argv = ["files", *argv]
 
     return parser.parse_args(argv)
 
 
-def run_cli(args: argparse.Namespace) -> list["TranscriptionResult"] | list[FrameExtractionResult]:
+def run_cli(
+    args: argparse.Namespace,
+) -> list["TranscriptionResult"] | list[FrameExtractionResult] | list["DiarizationResult"]:
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
 
     if args.command == "frames":
         return _extract_frames(args)
+
+    if args.command == "diarize":
+        return _run_diarize(args)
 
     _, transcribe_all_fn, transcribe_all_bytes_fn = _load_asr_components()
 
@@ -245,6 +295,8 @@ def run_cli(args: argparse.Namespace) -> list["TranscriptionResult"] | list[Fram
     )
 
     if getattr(args, "diarize", False):
+        if args.diarize_device not in (None, "mps"):
+            raise RuntimeError("話者分離は MPS 専用です。--diarize-device には mps 以外を指定できません。")
         (DiarizeOptionsCls, attach_speaker_labels_fn, diarize_all_fn) = _load_diarize_components()
         diarize_options = DiarizeOptionsCls(
             token=args.diarize_token,
@@ -252,7 +304,7 @@ def run_cli(args: argparse.Namespace) -> list["TranscriptionResult"] | list[Fram
             min_speakers=args.diarize_min_speakers,
             max_speakers=args.diarize_max_speakers,
             device=args.diarize_device,
-            require_mps=args.diarize_require_mps,
+            require_mps=True,
         )
         diarization_results = diarize_all_fn(args.audio, options=diarize_options)
         diarization_map = {dr.filename: dr for dr in diarization_results}
@@ -276,6 +328,23 @@ def _load_diarize_components():
     )
 
     return DiarizeOptions, attach_speaker_labels, diarize_all
+
+
+def _run_diarize(args: argparse.Namespace) -> list["DiarizationResult"]:
+    if args.device not in (None, "mps"):
+        raise RuntimeError("話者分離は MPS 専用です。--device には mps 以外を指定できません。")
+
+    DiarizeOptionsCls, _, diarize_all_fn = _load_diarize_components()
+    diarize_options = DiarizeOptionsCls(
+        token=args.token,
+        num_speakers=args.num_speakers,
+        min_speakers=args.min_speakers,
+        max_speakers=args.max_speakers,
+        device=args.device,
+        require_mps=True,
+        sample_rate=args.sample_rate,
+    )
+    return diarize_all_fn(args.audio, options=diarize_options)
 
 
 def _load_asr_components():
@@ -436,6 +505,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 - CLIからはエラーをそのまま通知する
         if args.command == "frames":
             raise SystemExit(f"フレーム抽出に失敗しました: {exc}") from exc
+        if args.command == "diarize":
+            raise SystemExit(f"話者分離に失敗しました: {exc}") from exc
         raise SystemExit(f"書き起こしに失敗しました: {exc}") from exc
 
     if args.command == "frames":
@@ -446,6 +517,20 @@ def main(argv: Sequence[str] | None = None) -> None:
                 continue
             for frame in extraction.frames:
                 print(f"[{frame.timestamp:.2f}s / #{frame.frame_index}] -> {frame.path}")
+            print()
+        return
+    if args.command == "diarize":
+        for result in results:  # type: ignore[assignment]
+            print("=== ファイル:", result.filename)
+            duration = getattr(result, "duration", None)
+            if duration is not None:
+                print(f"継続時間: {duration:.2f} 秒")
+            print("話者:", ", ".join(result.speakers) or "-")
+            if args.show_turns and hasattr(result, "turns"):
+                print("--- セグメント一覧 ---")
+                for turn in result.turns:
+                    speaker = getattr(turn, "speaker", "-")
+                    print(f"[{turn.start:.2f}s - {turn.end:.2f}s] {speaker}")
             print()
         return
 

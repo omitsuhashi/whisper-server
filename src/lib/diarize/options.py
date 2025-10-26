@@ -10,8 +10,8 @@ class DiarizeOptions:
     Diarization 実行時のオプション。
     - model_name: 既定は pyannote/speaker-diarization-3.1
     - token_env:  トークンを読む環境変数（順に探索）
-    - device:     "mps"|"cpu"|"cuda"（Noneで自動）
-    - require_mps: True で MPS 未検出時に例外（Metal前提の安全弁）
+    - device:     "mps"（Noneでも自動で mps を選択）
+    - require_mps: True 固定。MPS を前提とし、CPU にはフォールバックしない
     - *speakers:  人数の事前情報があると安定（num/min/max）
     """
 
