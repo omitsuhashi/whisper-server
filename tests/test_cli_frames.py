@@ -52,7 +52,8 @@ class CLIFrameExtractionTests(unittest.TestCase):
             frame_info = extraction.frames[0]
             self.assertAlmostEqual(frame_info.timestamp, 2.5, places=2)
             self.assertEqual(frame_info.frame_index, 15)
-            self.assertTrue(frame_info.path.name.endswith(".jpg"))
+            expected_dir = output_dir / "meeting"
+            self.assertEqual(frame_info.path.parent, expected_dir)
             expected_name = "meeting_00002500_000015_0000.jpg"
             self.assertEqual(frame_info.path.name, expected_name)
 

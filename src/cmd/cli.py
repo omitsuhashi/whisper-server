@@ -299,13 +299,7 @@ def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
             diff_threshold=float(args.diff_threshold),
             max_frames=int(args.max_frames) if args.max_frames is not None else None,
         )
-        target_dir = _resolve_output_dir(video_path, base_output, len(video_paths))
-        if target_dir.exists():
-            if args.overwrite:
-                shutil.rmtree(target_dir)
-            else:
-                raise FrameSamplingError(f"出力先が既に存在します: {target_dir}")
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = _prepare_output_dir(video_path, base_output, args.overwrite)
 
         saved_frames: list[SavedFrameInfo] = []
         extension = _normalize_extension(args.image_format)
@@ -326,12 +320,33 @@ def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
     return outputs
 
 
-def _resolve_output_dir(video_path: Path, base_output: Path | None, total_videos: int) -> Path:
+def _prepare_output_dir(video_path: Path, base_output: Path | None, overwrite: bool) -> Path:
     if base_output is None:
-        return video_path.parent / f"{video_path.stem}_frames"
-    if total_videos == 1:
-        return base_output
-    return base_output / video_path.stem
+        base = video_path.parent
+        prefix = f"{video_path.stem}_frames"
+    else:
+        base = base_output
+        prefix = video_path.stem
+
+    base.mkdir(parents=True, exist_ok=True)
+
+    candidate = base / prefix
+    if not candidate.exists():
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    if overwrite:
+        shutil.rmtree(candidate)
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+
+    suffix = 1
+    while True:
+        alternative = base / f"{prefix}_{suffix:02d}"
+        if not alternative.exists():
+            alternative.mkdir(parents=True, exist_ok=True)
+            return alternative
+        suffix += 1
 
 
 def _normalize_extension(fmt: str) -> str:
