@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from subprocess import CalledProcessError, run
 
 import numpy as np
@@ -24,11 +25,20 @@ def coerce_to_bytes(blob: bytes | bytearray | memoryview) -> bytes:
     return bytes(memoryview(blob))
 
 
+logger = logging.getLogger(__name__)
+
+
 def decode_audio_bytes(audio_bytes: bytes, *, sample_rate: int) -> np.ndarray:
     """Decode arbitrary audio bytes into a normalized float32 mono waveform."""
 
     if not audio_bytes:
         raise AudioDecodeError("empty-input")
+
+    logger.info(
+        "decode_audio_bytes: received_bytes=%d sample_rate=%d",
+        len(audio_bytes),
+        sample_rate,
+    )
 
     cmd = [
         "ffmpeg",
@@ -56,6 +66,7 @@ def decode_audio_bytes(audio_bytes: bytes, *, sample_rate: int) -> np.ndarray:
         raise AudioDecodeError("ffmpeg-not-found") from exc
     except CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="ignore") if exc.stderr else "unknown error"
+        logger.warning("decode_audio_bytes: ffmpeg failed: %s", stderr.strip())
         raise AudioDecodeError("ffmpeg-error", stderr) from exc
 
     waveform = np.frombuffer(completed.stdout, dtype=np.int16).astype(np.float32)

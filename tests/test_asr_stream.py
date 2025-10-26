@@ -1,4 +1,3 @@
-import asyncio
 import atexit
 import io
 import shutil
@@ -10,6 +9,7 @@ from contextlib import closing
 from unittest import mock
 
 import numpy as np
+from fastapi.testclient import TestClient
 
 # mlx_whisper の初期化を避けるためのスタブ
 original_mlx = sys.modules.get("mlx_whisper")
@@ -40,7 +40,6 @@ atexit.register(_restore_original_modules)
 
 from src.cmd import cli
 from src.cmd import http as http_cmd
-from src.config.defaults import DEFAULT_MODEL_NAME
 from src.lib.asr import TranscriptionResult
 from src.lib.asr import main as asr_main
 
@@ -193,124 +192,43 @@ class CliStreamTests(unittest.TestCase):
         self.assertEqual(mock_transcribe_bytes.call_count, 3)
 
 
-class HttpWebSocketTests(unittest.TestCase):
+class HttpRestTests(unittest.TestCase):
     def setUp(self) -> None:
         if shutil.which("ffmpeg") is None:
             self.skipTest("ffmpeg が見つかりません")
-        self.audio_bytes = _generate_wav_bytes()
 
-    @staticmethod
-    async def _invoke_ws(actions, **handler_kwargs):
-        app = http_cmd.create_app()
-        route = next(r for r in app.routes if getattr(r, "path", None) == "/ws/transcribe")
-        handler = route.endpoint
-
-        websocket = _MockWebSocket(actions)
-        await handler(websocket, **handler_kwargs)
-        return websocket
-
-    @mock.patch("src.cmd.http.transcribe_all_bytes")
-    def test_ws_transcribe_success(self, mock_transcribe_bytes: mock.Mock) -> None:
-        fake_result = TranscriptionResult(filename="ws", text="ok", language="ja")
-        mock_transcribe_bytes.return_value = [fake_result]
-
-        actions = [
-            {"bytes": self.audio_bytes},
-            {"text": "done"},
+    @mock.patch("src.cmd.http.transcribe_all")
+    def test_transcribe_endpoint_handles_multiple_files(self, mock_transcribe_all: mock.Mock) -> None:
+        mock_transcribe_all.return_value = [
+            TranscriptionResult(filename="tmp1.wav", text="hello", language="en"),
+            TranscriptionResult(filename="tmp2.wav", text="こんにちは", language="ja"),
         ]
 
-        websocket = asyncio.run(
-            self._invoke_ws(
-                actions,
-                model="fake-model",
-                language="ja",
-                task=None,
-            )
+        app = http_cmd.create_app()
+        client = TestClient(app)
+        files = [
+            ("files", ("sample1.wav", _generate_wav_bytes(), "audio/wav")),
+            ("files", ("sample2.wav", _generate_wav_bytes(), "audio/wav")),
+        ]
+
+        response = client.post(
+            "/transcribe",
+            files=files,
+            data={"model": "fake-model", "language": "ja"},
         )
 
-        self.assertTrue(websocket.accepted)
-        self.assertTrue(websocket.closed)
-        self.assertEqual(websocket.close_code, 1000)
-        self.assertEqual(websocket.sent[0]["text"], "ok")
-        self.assertTrue(websocket.sent[0]["final"])
-        self.assertEqual(websocket.sent[0]["delta"], "ok")
-        mock_transcribe_bytes.assert_called_once()
-        _, kwargs = mock_transcribe_bytes.call_args
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]["filename"], "sample1.wav")
+        self.assertEqual(payload[1]["filename"], "sample2.wav")
+        self.assertEqual(payload[1]["text"], "こんにちは")
+
+        mock_transcribe_all.assert_called_once()
+        args, kwargs = mock_transcribe_all.call_args
+        self.assertEqual(len(args[0]), 2)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(kwargs["language"], "ja")
-
-    def test_ws_transcribe_empty_audio(self) -> None:
-        actions = [{"text": "done"}]
-
-        websocket = asyncio.run(
-            self._invoke_ws(
-                actions,
-                model=DEFAULT_MODEL_NAME,
-                language=None,
-                task=None,
-            )
-        )
-
-        self.assertTrue(websocket.closed)
-        self.assertEqual(websocket.close_code, 1007)
-        self.assertIn("音声データが送信されていません", websocket.sent[0]["error"])
-        self.assertTrue(websocket.sent[0]["final"])
-
-    @mock.patch("src.cmd.http.transcribe_all_bytes")
-    def test_ws_transcribe_flush_partial(self, mock_transcribe_bytes: mock.Mock) -> None:
-        first = TranscriptionResult(filename="ws", text="こ", language="ja")
-        second = TranscriptionResult(filename="ws", text="こんにちは", language="ja")
-        mock_transcribe_bytes.side_effect = [[first], [second]]
-
-        mid = len(self.audio_bytes) // 2
-        actions = [
-            {"bytes": self.audio_bytes[:mid]},
-            {"text": "flush"},
-            {"bytes": self.audio_bytes[mid:]},
-            {"text": "done"},
-        ]
-
-        websocket = asyncio.run(
-            self._invoke_ws(
-                actions,
-                model="fake-model",
-                language="ja",
-                task=None,
-            )
-        )
-
-        self.assertEqual(len(websocket.sent), 2)
-        partial, final = websocket.sent
-        self.assertFalse(partial["final"])
-        self.assertEqual(partial["delta"], "こ")
-        self.assertEqual(partial["text"], "こ")
-        self.assertTrue(final["final"])
-        self.assertEqual(final["delta"], "んにちは")
-        self.assertEqual(final["text"], "こんにちは")
-        self.assertTrue(websocket.closed)
-        self.assertEqual(mock_transcribe_bytes.call_count, 2)
-
-
-class _MockWebSocket:
-    def __init__(self, actions):
-        self._actions = iter(actions)
-        self.sent = []
-        self.accepted = False
-        self.closed = False
-        self.close_code = None
-
-    async def accept(self) -> None:
-        self.accepted = True
-
-    async def receive(self):
-        return next(self._actions)
-
-    async def send_json(self, message) -> None:
-        self.sent.append(message)
-
-    async def close(self, code: int) -> None:
-        self.closed = True
-        self.close_code = code
 
 
 if __name__ == "__main__":  # pragma: no cover

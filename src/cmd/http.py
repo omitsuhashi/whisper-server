@@ -7,11 +7,10 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
-from fastapi import WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
-from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
+from src.lib.asr import TranscriptionResult, transcribe_all
 
 logger = logging.getLogger(__name__)
 
@@ -27,25 +26,29 @@ def create_app() -> FastAPI:
 
         return {"status": "ok"}
 
-    @app.post("/transcribe", response_model=TranscriptionResult)
-    async def transcribe_endpoint(
-        file: UploadFile = File(...),
+    @app.post("/transcribe", response_model=list[TranscriptionResult])
+    async def transcribe_endpoint(  # noqa: PLR0912 - 例外処理で分岐が増える
+        files: list[UploadFile] = File(...),
         model: str = Form(DEFAULT_MODEL_NAME),
         language: Optional[str] = Form(None),
         task: Optional[str] = Form(None),
-    ) -> TranscriptionResult:
-        """アップロードされた音声を書き起こして返す。"""
+    ) -> list[TranscriptionResult]:
+        """アップロードされた音声群を書き起こして返す。"""
 
-        tmp_path: Path | None = None
+        if not files:
+            raise HTTPException(status_code=400, detail="音声ファイルが指定されていません")
+
+        tmp_paths: list[Path] = []
         try:
-            suffix = _infer_suffix(file.filename)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                shutil.copyfileobj(file.file, tmp)
-                tmp_path = Path(tmp.name)
+            for upload in files:
+                suffix = _infer_suffix(upload.filename)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    shutil.copyfileobj(upload.file, tmp)
+                    tmp_paths.append(Path(tmp.name))
 
             results = await asyncio.to_thread(
                 transcribe_all,
-                [tmp_path],
+                tmp_paths,
                 model_name=model or DEFAULT_MODEL_NAME,
                 language=language or DEFAULT_LANGUAGE,
                 task=task,
@@ -53,105 +56,21 @@ def create_app() -> FastAPI:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
-            logger.exception("書き起こしに失敗しました: %s", file.filename or "upload")
+            logger.exception("書き起こしに失敗しました: %s", [f.filename for f in files])
             raise HTTPException(status_code=500, detail="書き起こしに失敗しました") from exc
         finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
+            for path in tmp_paths:
+                path.unlink(missing_ok=True)
 
-        if not results:
-            raise HTTPException(status_code=500, detail="書き起こし結果が空でした")
+        if not results or len(results) != len(files):
+            raise HTTPException(status_code=500, detail="書き起こし結果が不正です")
 
-        result = results[0]
-        display_name = file.filename or result.filename
-        return result.model_copy(update={"filename": display_name})
+        updated: list[TranscriptionResult] = []
+        for upload, result in zip(files, results, strict=True):
+            display_name = upload.filename or result.filename
+            updated.append(result.model_copy(update={"filename": display_name}))
 
-    @app.websocket("/ws/transcribe")
-    async def transcribe_stream(
-        websocket: WebSocket,
-        model: str = DEFAULT_MODEL_NAME,
-        language: Optional[str] = None,
-        task: Optional[str] = None,
-    ) -> None:
-        """WebSocket経由で音声バイト列を受け取り、書き起こし結果を返す。"""
-
-        await websocket.accept()
-        audio_buffer = bytearray()
-        last_text = ""
-        closed = False
-
-        async def emit(final: bool) -> None:
-            nonlocal last_text, closed
-
-            if not audio_buffer:
-                await websocket.send_json({"error": "音声データが送信されていません。", "final": final})
-                if final:
-                    await websocket.close(code=1007)
-                    closed = True
-                return
-
-            try:
-                results = await asyncio.to_thread(
-                    transcribe_all_bytes,
-                    [bytes(audio_buffer)],
-                    model_name=model or DEFAULT_MODEL_NAME,
-                    language=language or DEFAULT_LANGUAGE,
-                    task=task,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("WebSocket書き起こし中にエラーが発生しました")
-                await websocket.send_json({"error": "書き起こしに失敗しました。", "final": final})
-                await websocket.close(code=1011)
-                closed = True
-                return
-
-            if not results:
-                await websocket.send_json({"error": "書き起こし結果が空でした。", "final": final})
-                await websocket.close(code=1011)
-                closed = True
-                return
-
-            result = results[0]
-            text = result.text or ""
-            delta = text[len(last_text) :] if text.startswith(last_text) else text
-            last_text = text
-
-            payload = result.model_dump()
-            payload.update({"delta": delta, "final": final})
-            await websocket.send_json(payload)
-
-            if final:
-                await websocket.close(code=1000)
-                closed = True
-
-        try:
-            while True:
-                message = await websocket.receive()
-                data = message.get("bytes")
-                if data:
-                    audio_buffer.extend(data)
-                    continue
-
-                text = message.get("text")
-                if text is None:
-                    continue
-
-                command = text.strip().lower()
-                if command in {"flush", "partial"}:
-                    await emit(final=False)
-                elif command in {"done", "finish", "close"}:
-                    await emit(final=True)
-                    break
-        except WebSocketDisconnect:
-            return
-        except Exception as exc:  # noqa: BLE001 - 予期せぬ障害はクライアントへ通知する
-            logger.exception("WebSocket受信中にエラーが発生しました")
-            await websocket.send_json({"error": f"受信中にエラーが発生しました: {exc}", "final": False})
-            await websocket.close(code=1011)
-            return
-
-        if not closed and audio_buffer:
-            await emit(final=True)
+        return updated
 
     return app
 

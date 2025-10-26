@@ -17,4 +17,5 @@ dependencies = [
     "torchcodec==0.8.0",
     "opencv-python-headless==4.10.0.84",
     "uvicorn==0.38.0",
+    "httpx>=0.28.1",
 ]
