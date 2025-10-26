@@ -4,6 +4,7 @@ UVICORN := $(PYTHON) -m uvicorn
 HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 1
+LOG_LEVEL ?= INFO
 
 ifeq ($(firstword $(MAKECMDGOALS)),cli-files)
   CLI_FILES_EXTRA := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
@@ -41,7 +42,7 @@ help:
 	@echo "                               # 標準入力経由でストリーム書き起こし (音声バイトをパイプで供給すること)"
 	@echo "  make audio-streaming [DEVICE=idx] [SECONDS=] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # ffmpeg でマイク録音→CLI ストリームへパイプ"
-	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=0|1]"
+	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=0|1] [LOG_LEVEL=DEBUG]"
 	@echo "                               # FastAPI サーバーを uvicorn で起動"
 cli:
 	$(CLI)
@@ -108,8 +109,9 @@ audio-streaming:
 http:
 	@RELOAD_FLAG=""; \
 	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
-	echo "$(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT)"; \
-	$(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory
+	LOWER_LOG_LEVEL=$$(printf '%s' "$(LOG_LEVEL)" | tr '[:upper:]' '[:lower:]'); \
+	echo "LOG_LEVEL=$(LOG_LEVEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
+	LOG_LEVEL=$(LOG_LEVEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
 
 test:
 	$(PYTHON) -m unittest discover -s tests
