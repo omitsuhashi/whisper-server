@@ -40,6 +40,14 @@ def create_app() -> FastAPI:
         if not files:
             raise HTTPException(status_code=400, detail="音声ファイルが指定されていません")
 
+        logger.debug(
+            "transcribe_request: files=%s model=%s language=%s task=%s",
+            [upload.filename for upload in files],
+            model or DEFAULT_MODEL_NAME,
+            language or DEFAULT_LANGUAGE,
+            task,
+        )
+
         tmp_paths: list[Path] = []
         try:
             for upload in files:
@@ -71,6 +79,19 @@ def create_app() -> FastAPI:
         for upload, result in zip(files, results, strict=True):
             display_name = upload.filename or result.filename
             updated.append(result.model_copy(update={"filename": display_name}))
+
+        logger.debug(
+            "transcribe_response: %s",
+            [
+                {
+                    "filename": res.filename,
+                    "segments": len(res.segments),
+                    "language": res.language,
+                    "duration": res.duration,
+                }
+                for res in updated
+            ],
+        )
 
         return updated
 
