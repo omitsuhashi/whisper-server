@@ -2365,6 +2365,7 @@ dependencies = [
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchcodec" },
+    { name = "tqdm" },
     { name = "uvicorn" },
 ]
 
@@ -2383,6 +2384,7 @@ requires-dist = [
     { name = "torch", specifier = "==2.9.0" },
     { name = "torchaudio", specifier = "==2.9.0" },
     { name = "torchcodec", specifier = "==0.8.0" },
+    { name = "tqdm", specifier = ">=4.67.1" },
     { name = "uvicorn", specifier = "==0.38.0" },
 ]
 
