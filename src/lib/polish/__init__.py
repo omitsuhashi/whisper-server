@@ -1,4 +1,4 @@
-from .llm_client import LLMPolishError, LLMPolisher
+from .llm_client import LLMPolishError, LLMPolisher, unload_llm_models
 from .main import polish_result, polish_text_from_segments
 from .models import PolishedDocument, PolishedSentence
 from .options import PolishOptions
@@ -7,6 +7,7 @@ from .storage import save_json_doc, save_srt, save_txt
 __all__ = [
     "LLMPolisher",
     "LLMPolishError",
+    "unload_llm_models",
     "PolishOptions",
     "PolishedSentence",
     "PolishedDocument",

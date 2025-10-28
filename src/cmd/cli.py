@@ -23,6 +23,12 @@ from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.polish import PolishedSentence, PolishOptions, polish_text_from_segments
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
+from src.lib.context import (
+    IntegratedMeetingContext,
+    build_image_contexts_from_video,
+    integrate_meeting_data,
+    render_mermaid_mindmap,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.lib.asr import TranscriptionResult
@@ -124,6 +130,37 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--diarize-token",
         default=None,
         help="Hugging Face のアクセストークン（未指定時は環境変数から探索）",
+    )
+    # 画面コンテキスト解析（任意）
+    file_parser.add_argument(
+        "--video",
+        nargs="*",
+        default=None,
+        help="音声と同順の画面録画動画（任意）。指定した場合はキーフレームから画面コンテキストを解析して統合します。",
+    )
+    file_parser.add_argument(
+        "--context-min-scene-span",
+        type=float,
+        default=1.0,
+        help="画面解析: 同一シーンとみなす最小間隔（秒）",
+    )
+    file_parser.add_argument(
+        "--context-diff-threshold",
+        type=float,
+        default=0.3,
+        help="画面解析: シーン切替のヒストグラム距離の閾値（0〜1）",
+    )
+    file_parser.add_argument(
+        "--max-context-frames",
+        type=int,
+        default=50,
+        help="画面解析: 最大解析フレーム数（肥大化防止のための上限）",
+    )
+    file_parser.add_argument(
+        "--output",
+        choices=["text", "json", "mermaid"],
+        default=None,
+        help="統合出力の形式（未指定: 既存の標準出力）",
     )
 
     stream_parser = subparsers.add_parser(
@@ -636,6 +673,64 @@ def main(argv: Sequence[str] | None = None) -> None:
             print()
         return
 
+    # 統合出力フロー（--output 指定時）
+    selected_output = getattr(args, "output", None)
+    if selected_output in {"json", "mermaid"}:  # type: ignore[truthy-bool]
+        # 準備: 話者/ダイアライズ/画面コンテキスト
+        speaker_map: dict[str, Any] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
+        diar_map = getattr(args, "_diarization_results", {})
+        videos: list[str] = []
+        if getattr(args, "video", None):
+            videos = list(args.video)
+
+        def video_for_index(i: int) -> str | None:
+            if not videos:
+                return None
+            if i < len(videos):
+                return videos[i]
+            return videos[-1]
+
+        integrated: list[IntegratedMeetingContext] = []
+        for idx, result in enumerate(results):  # type: ignore[assignment]
+            video_path = video_for_index(idx)
+            image_contexts = None
+            if video_path:
+                try:
+                    image_contexts = build_image_contexts_from_video(
+                        video_path,
+                        min_scene_span=float(getattr(args, "context_min_scene_span", 1.0)),
+                        diff_threshold=float(getattr(args, "context_diff_threshold", 0.3)),
+                        max_frames=int(getattr(args, "max_context_frames", 50)),
+                    )
+                except Exception as exc:  # 解析失敗は致命的でない
+                    logger.warning("画面コンテキスト解析に失敗しました: %s", exc)
+
+            st = speaker_map.get(result.filename) if speaker_map else None
+            dr = diar_map.get(result.filename) if diar_map else None
+            integrated.append(
+                integrate_meeting_data(
+                    transcript=result,
+                    speaker_transcript=st,
+                    diarization=dr,
+                    image_contexts=image_contexts,
+                )
+            )
+
+        if selected_output == "json":
+            import json
+
+            print(json.dumps([ctx.model_dump() for ctx in integrated], ensure_ascii=False, indent=2))
+            return
+
+        if selected_output == "mermaid":
+            # 複数ファイル時は区切る
+            for i, ctx in enumerate(integrated):
+                if i > 0:
+                    print()
+                print(render_mermaid_mindmap(ctx))
+            return
+
+    # 既存の出力（互換維持）
     plain_text = getattr(args, "plain_text", False)
     stream_output = getattr(args, "_stream_output", False)
 

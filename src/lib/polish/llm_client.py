@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 from typing import Any, Dict, List, Sequence, Tuple
+import gc
 
 from importlib import import_module
 
@@ -18,6 +19,7 @@ mlx_make_sampler = None  # type: ignore[assignment]
 
 _MODEL_CACHE: Dict[str, Tuple[Any, Any]] = {}
 _MODEL_LOCK = threading.Lock()
+_USE_CACHE = os.getenv("LLM_POLISH_CACHE", "1").lower() not in {"0", "false", "off", "no"}
 
 
 def _ensure_mlx_loaded() -> None:
@@ -71,10 +73,15 @@ class LLMPolisher:
                 "mlx-lm の make_sampler が利用できません。'pip install -U mlx mlx-lm' を実行してから再度試してください。"
             )
 
-        with _MODEL_LOCK:
-            if self.model_id not in _MODEL_CACHE:
-                _MODEL_CACHE[self.model_id] = self._load_fn(self.model_id)
-            self._model, self._tokenizer = _MODEL_CACHE[self.model_id]
+        # キャッシュ利用可否に応じてロード戦略を切替
+        if _USE_CACHE:
+            with _MODEL_LOCK:
+                if self.model_id not in _MODEL_CACHE:
+                    _MODEL_CACHE[self.model_id] = self._load_fn(self.model_id)
+                self._model, self._tokenizer = _MODEL_CACHE[self.model_id]
+        else:
+            # 非キャッシュ: インスタンスローカルに読み込み、スコープ終了時に解放可能
+            self._model, self._tokenizer = self._load_fn(self.model_id)
 
     def polish(
         self,
@@ -202,5 +209,34 @@ class LLMPolisher:
             return sentences
         return None
 
+    # 明示解放（ベストエフォート）
+    def close(self) -> None:
+        try:
+            # インスタンス保持参照を破棄
+            self._model = None  # type: ignore[attr-defined]
+            self._tokenizer = None  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - 失敗しても致命的ではない
+            pass
+        gc.collect()
 
-__all__ = ["LLMPolisher", "LLMPolishError"]
+
+def unload_llm_models(model_id: str | None = None) -> int:
+    """LLM モデルキャッシュを解放する。
+
+    戻り値は解放できたエントリ数。
+    """
+    removed = 0
+    with _MODEL_LOCK:
+        global _MODEL_CACHE
+        if model_id is None:
+            removed = len(_MODEL_CACHE)
+            _MODEL_CACHE = {}
+        else:
+            if model_id in _MODEL_CACHE:
+                _MODEL_CACHE.pop(model_id, None)
+                removed = 1
+    gc.collect()
+    return removed
+
+
+__all__ = ["LLMPolisher", "LLMPolishError", "unload_llm_models"]

@@ -11,7 +11,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
-from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments
+import os
+from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments, unload_llm_models
 from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
 from src.lib.audio import (
     InvalidAudioError,
@@ -202,6 +203,21 @@ def create_app() -> FastAPI:
         except LLMPolishError as exc:
             logger.exception("LLM 校正に失敗しました")
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            # 非キャッシュ or 明示解放要求時は早期に参照を外す
+            try:
+                polisher.close()
+            except Exception:
+                pass
+
+        # 環境変数で即時アンロードを選べるようにする（既定: 無効）
+        if os.getenv("LLM_POLISH_EAGER_UNLOAD", "0").lower() in {"1", "true", "on", "yes"}:
+            target_model_id = payload.model_id or os.getenv("LLM_POLISH_MODEL")
+            try:
+                removed = unload_llm_models(target_model_id)
+                logger.debug("llm_model_unloaded: model=%s removed=%d", target_model_id, removed)
+            except Exception:
+                logger.debug("llm_model_unload_failed", exc_info=True)
 
         response_sentences = [PolishedSentencePayload(**sentence.model_dump()) for sentence in polished_sentences]
         combined_text = "\n".join(sentence.text for sentence in polished_sentences).strip()

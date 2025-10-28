@@ -187,7 +187,8 @@ def _should_force_silence(raw_result: dict[str, Any]) -> bool:
 
     max_score = max(scores)
     avg_score = sum(scores) / len(scores)
-    return max_score >= 0.6 or avg_score >= 0.5
+    # Whisper の閾値は環境によって感度が高く出ることがあるため、より広い音量帯を許容するように上げておく。
+    return max_score >= 0.85 or avg_score >= 0.75
 
 
 __all__ = [
