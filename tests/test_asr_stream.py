@@ -139,6 +139,49 @@ class TranscribeAllBytesTests(unittest.TestCase):
         self.assertEqual(call_kwargs["path_or_hf_repo"], "fake-model")
         self.assertEqual(call_kwargs["language"], "ja")
 
+    @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_transcribe_all_bytes_skips_silence(self, mock_transcribe: mock.Mock) -> None:
+        mock_transcribe.return_value = {}
+
+        results = asr_main.transcribe_all_bytes(
+            [_generate_silent_wav_bytes()],
+            model_name="fake-model",
+            language="ja",
+        )
+
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertEqual(result.text, "")
+        self.assertEqual(len(result.segments), 0)
+        mock_transcribe.assert_not_called()
+
+    @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_transcribe_all_bytes_forces_silence_when_model_reports_no_speech(
+        self, mock_transcribe: mock.Mock
+    ) -> None:
+        mock_transcribe.return_value = {
+            "text": "ご視聴ありがとうございました",
+            "language": "ja",
+            "segments": [
+                {
+                    "id": 0,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "ご視聴ありがとうございました",
+                    "no_speech_prob": 0.92,
+                }
+            ],
+        }
+
+        results = asr_main.transcribe_all_bytes(
+            [self.audio_bytes],
+            model_name="fake-model",
+            language="ja",
+        )
+
+        self.assertEqual(results[0].text, "")
+        mock_transcribe.assert_called_once()
+
 
 class CliStreamTests(unittest.TestCase):
     def setUp(self) -> None:
