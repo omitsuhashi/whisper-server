@@ -10,6 +10,14 @@ from src.lib.polish.models import PolishedSentence
 
 
 class TestLLMPolisher(unittest.TestCase):
+    class _DummyTokenizer:
+        def __init__(self) -> None:
+            self.messages = None
+
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            self.messages = messages
+            return "PROMPT"
+
     @mock.patch("src.lib.polish.llm_client.mlx_make_sampler")
     @mock.patch("src.lib.polish.llm_client.mlx_generate")
     @mock.patch("src.lib.polish.llm_client.mlx_load")
@@ -103,6 +111,38 @@ class TestLLMPolisher(unittest.TestCase):
             polisher = LLMPolisher()
             with self.assertRaises(LLMPolishError):
                 polisher.polish([PolishedSentence(start=0.0, end=1.0, text="原文です。")])
+
+    def test_build_prompt_contains_kousei_keyword(self) -> None:
+        tokenizer = self._DummyTokenizer()
+
+        def fake_load(model_id: str):
+            return ("model", tokenizer)
+
+        llm_client._MODEL_CACHE.clear()
+        polisher = LLMPolisher(
+            model_id="demo/model",
+            load_fn=fake_load,
+            generate_fn=lambda *args, **kwargs: "",
+            sampler_factory=lambda **kwargs: mock.Mock(),
+        )
+
+        sentences = [
+            PolishedSentence(start=0.0, end=1.0, text="これはテスト用の文です。"),
+            PolishedSentence(start=1.0, end=2.0, text="もう一文を追加します。"),
+        ]
+
+        prompt = polisher._build_prompt(
+            sentences,
+            style="ですます",
+            extra_instructions="丁寧に校正してください。",
+        )
+
+        self.assertEqual(prompt, "PROMPT")
+        self.assertIsNotNone(tokenizer.messages)
+        system_message = tokenizer.messages[0]["content"]
+        user_message = tokenizer.messages[1]["content"]
+        self.assertIn("校正", system_message)
+        self.assertIn("校正", user_message)
 
 
 if __name__ == "__main__":
