@@ -148,7 +148,7 @@ def _translate_decode_error(exc: AudioDecodeError) -> RuntimeError:
     return RuntimeError("音声データのデコードに失敗しました。")
 
 
-def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 5e-4) -> bool:
+def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 2e-4) -> bool:
     if waveform.size == 0:
         return True
     energy = float(np.mean(np.abs(waveform)))
