@@ -4,7 +4,6 @@ UVICORN := $(PYTHON) -m uvicorn
 HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 0
-HTTP_WORKERS ?=
 LOG_LEVEL ?= INFO
 LLM_POLISH_MODEL ?= mlx-community/Qwen3-1.7B-MLX-MXFP4
 
@@ -153,20 +152,10 @@ audio-devices:
 
 http:
 	@RELOAD_FLAG=""; \
-	WORKER_FLAG=""; \
-	if [ "$(HTTP_RELOAD)" != "0" ]; then \
-		if [ -n "$(HTTP_WORKERS)" ]; then \
-			echo "warning: HTTP_RELOAD は有効ですが HTTP_WORKERS が指定されています。リロード有効時はワーカー数を変更できません。" >&2; \
-		fi; \
-		RELOAD_FLAG="--reload"; \
-	else \
-		if [ -n "$(HTTP_WORKERS)" ]; then \
-			WORKER_FLAG="--workers $(HTTP_WORKERS)"; \
-		fi; \
-	fi; \
+	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
 	LOWER_LOG_LEVEL=$$(printf '%s' "$(LOG_LEVEL)" | tr '[:upper:]' '[:lower:]'); \
-	echo "LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG $$WORKER_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
-	LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG $$WORKER_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
+	echo "LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
+	LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
 
 test:
 	$(PYTHON) -m unittest discover -s tests
