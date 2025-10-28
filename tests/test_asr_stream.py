@@ -42,12 +42,27 @@ from src.cmd import cli
 from src.cmd import http as http_cmd
 from src.lib.asr import TranscriptionResult
 from src.lib.asr import main as asr_main
+from src.lib.polish import PolishedSentence
 
 
 def _generate_wav_bytes(duration_sec: float = 0.1) -> bytes:
     sample_rate = 16000
     total_samples = int(sample_rate * duration_sec)
     payload = (np.sin(np.linspace(0, np.pi, total_samples)) * 1000).astype(np.int16)
+
+    buffer = io.BytesIO()
+    with closing(wave.open(buffer, "wb")) as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(payload.tobytes())
+    return buffer.getvalue()
+
+
+def _generate_silent_wav_bytes(duration_sec: float = 0.1) -> bytes:
+    sample_rate = 16000
+    total_samples = int(sample_rate * duration_sec)
+    payload = np.zeros(total_samples, dtype=np.int16)
 
     buffer = io.BytesIO()
     with closing(wave.open(buffer, "wb")) as wav:
@@ -229,6 +244,81 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(len(args[0]), 2)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(kwargs["language"], "ja")
+
+    @mock.patch("src.cmd.http.polish_text_from_segments")
+    def test_polish_endpoint_returns_polished_sentences(self, mock_polish: mock.Mock) -> None:
+        mock_polish.return_value = [
+            PolishedSentence(start=0.0, end=1.5, text="こんにちは。"),
+            PolishedSentence(start=1.5, end=3.0, text="よろしくお願いします。"),
+        ]
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        payload = {
+            "segments": [
+                {"start": 0.0, "end": 1.5, "text": "こんにちは"},
+                {"start": 1.5, "end": 3.0, "text": "よろしくお願いします"},
+            ],
+            "options": {"use_ginza": False, "style": "ですます"},
+        }
+
+        response = client.post("/polish", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["sentence_count"], 2)
+        self.assertEqual(body["text"], "こんにちは。\nよろしくお願いします。")
+        self.assertEqual(len(body["sentences"]), 2)
+        self.assertEqual(body["sentences"][0]["start"], 0.0)
+        self.assertEqual(body["sentences"][1]["text"], "よろしくお願いします。")
+
+        args, kwargs = mock_polish.call_args
+        segments = list(args[0])
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0].text, "こんにちは")
+        options = kwargs["options"]
+        self.assertFalse(options.use_ginza)
+        self.assertEqual(options.style, "ですます")
+
+    def test_polish_endpoint_rejects_empty_segments(self) -> None:
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post("/polish", json={"segments": []})
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("segments", response.text)
+
+    @mock.patch("src.cmd.http.transcribe_all")
+    def test_transcribe_endpoint_skips_silent_audio(self, mock_transcribe_all: mock.Mock) -> None:
+        speech_result = TranscriptionResult(filename="speech.wav", text="ありがとう")
+        mock_transcribe_all.return_value = [speech_result]
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        files = [
+            ("files", ("silence.wav", _generate_silent_wav_bytes(), "audio/wav")),
+            ("files", ("speech.wav", _generate_wav_bytes(), "audio/wav")),
+        ]
+
+        response = client.post(
+            "/transcribe",
+            files=files,
+            data={"model": "fake-model", "language": "ja"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(payload[0]["filename"], "silence.wav")
+        self.assertEqual(payload[0]["text"], "")
+        self.assertEqual(payload[1]["text"], "ありがとう")
+
+        mock_transcribe_all.assert_called_once()
+        args, _ = mock_transcribe_all.call_args
+        self.assertEqual(len(args[0]), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover
