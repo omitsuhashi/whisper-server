@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List
+from typing import Any, List, TYPE_CHECKING
 
-import spacy
-from spacy.language import Language
+if TYPE_CHECKING:  # pragma: no cover
+    from spacy.language import Language
+else:  # pragma: no cover
+    Language = Any
 
 from .options import PolishOptions
 
@@ -23,6 +25,8 @@ def load_ginza(model_name: str) -> Language:
         return _GINZA_NLP
 
     try:
+        import spacy
+
         nlp = spacy.load(model_name)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
