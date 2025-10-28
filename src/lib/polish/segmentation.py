@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, List, TYPE_CHECKING
+from typing import Any, List, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from spacy.language import Language
@@ -17,30 +17,53 @@ _GINZA_MODEL_NAME = "ja_ginza_electra"
 _GINZA_NLP: Language | None = None
 
 
-def load_ginza(model_name: str) -> Language:
+def load_ginza(model_name: str, *, fallbacks: Sequence[str] = ()) -> Language:
     """GiNZA モデルをロードし、グローバルにキャッシュする。"""
 
     global _GINZA_MODEL_NAME, _GINZA_NLP
-    if _GINZA_NLP is not None and _GINZA_MODEL_NAME == model_name:
-        return _GINZA_NLP
 
-    try:
-        import spacy
+    candidates = [model_name, *fallbacks]
+    last_exc: Exception | None = None
 
-        nlp = spacy.load(model_name)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"GiNZA モデル '{model_name}' の読み込みに失敗しました。"
-            " pip install ginza ja-ginza-electra 等で依存関係を満たしてください。"
-        ) from exc
+    for candidate in candidates:
+        if _GINZA_NLP is not None and _GINZA_MODEL_NAME == candidate:
+            return _GINZA_NLP
 
-    _GINZA_MODEL_NAME = model_name
-    _GINZA_NLP = nlp
-    return nlp
+        try:
+            import spacy
+
+            nlp = spacy.load(candidate)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.debug(
+                "GiNZAモデル '%s' の読み込みに失敗しました: %s",
+                candidate,
+                exc,
+                exc_info=True,
+            )
+            continue
+
+        _GINZA_MODEL_NAME = candidate
+        _GINZA_NLP = nlp
+
+        if candidate != model_name:
+            logger.warning(
+                "GiNZAモデル '%s' が利用できなかったため '%s' にフォールバックします。",
+                model_name,
+                candidate,
+            )
+        return nlp
+
+    tried = "、".join(candidates)
+    raise RuntimeError(
+        f"GiNZA モデル '{model_name}' の読み込みに失敗しました"
+        f"（試行済み: {tried}）。"
+        " pip install ginza ja-ginza-electra 等で依存関係を満たしてください。"
+    ) from last_exc
 
 
 def split_with_ginza(text: str, opt: PolishOptions) -> List[str]:
-    nlp = load_ginza(opt.ginza_model)
+    nlp = load_ginza(opt.ginza_model, fallbacks=opt.ginza_model_fallbacks)
     doc = nlp(text)
     return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 

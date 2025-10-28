@@ -11,6 +11,7 @@ class PolishOptions:
     style: str = "ですます"  # "常体" も指定可
     use_ginza: bool = True  # GiNZA を利用した文分割
     ginza_model: str = "ja_ginza_electra"
+    ginza_model_fallbacks: Tuple[str, ...] = ("ja_ginza",)
     ginza_fallback_to_heuristics: bool = True  # GiNZA 失敗時にヒューリスティクスへフォールバックするか
     remove_fillers: bool = True
     filler_patterns: Tuple[str, ...] = (
