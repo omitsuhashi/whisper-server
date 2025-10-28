@@ -13,7 +13,8 @@ def split_with_heuristics(text: str, opt: PolishOptions) -> List[str]:
     for chunk in pieces:
         buf = (buf + " " + chunk).strip() if buf else chunk
         too_long = len(buf) >= opt.max_sentence_len
-        matched_tail = any(re.search(pattern, buf) for pattern in opt.period_heuristics)
+        ends_with_punct = bool(re.search(r"[。！？!?]\s*$", buf))
+        matched_tail = ends_with_punct or any(re.search(pattern, buf) for pattern in opt.period_heuristics)
         if too_long or matched_tail:
             if not re.search(r"[。！？!?]\s*$", buf):
                 buf += "。"
