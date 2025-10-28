@@ -18,6 +18,8 @@ import cv2
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
+from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
+from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -252,8 +254,12 @@ def run_cli(
 
     _, transcribe_all_fn, transcribe_all_bytes_fn = _load_asr_components()
 
-    model_name = args.model or DEFAULT_MODEL_NAME
-    language = args.language or DEFAULT_LANGUAGE
+    model_name, language = resolve_model_and_language(
+        args.model,
+        args.language,
+        default_model=DEFAULT_MODEL_NAME,
+        default_language=DEFAULT_LANGUAGE,
+    )
 
     args._stream_output = False  # type: ignore[attr-defined]
 
@@ -287,11 +293,23 @@ def run_cli(
             names=[args.name],
         )
 
-    results = transcribe_all_fn(
-        args.audio,
+    if getattr(args, "diarize", False) and args.diarize_device not in (None, "mps"):
+        raise RuntimeError("話者分離は MPS 専用です。--diarize-device には mps 以外を指定できません。")
+
+    prepared: list[PreparedAudio] = []
+    for audio_path in args.audio:
+        path = Path(audio_path)
+        try:
+            prepared.append(prepare_audio(path, path.name))
+        except InvalidAudioError as exc:
+            raise RuntimeError(f"音声ファイルの検証に失敗しました: {audio_path}: {exc}") from exc
+
+    results = transcribe_prepared_audios(
+        prepared,
         model_name=model_name,
         language=language,
         task=args.task,
+        transcribe_all_fn=transcribe_all_fn,
     )
 
     if getattr(args, "diarize", False):

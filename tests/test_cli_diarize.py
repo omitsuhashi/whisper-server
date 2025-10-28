@@ -1,9 +1,15 @@
 import io
+import os
+import tempfile
 import unittest
+import wave
 from dataclasses import dataclass, field
 from contextlib import redirect_stdout
+from pathlib import Path
 from typing import List
 from unittest import mock
+
+import numpy as np
 
 from src.cmd import cli
 
@@ -69,17 +75,19 @@ class CLIDiarizeTests(unittest.TestCase):
         mock_load_asr: mock.Mock,
         mock_load_diarize: mock.Mock,
     ) -> None:
+        temp_audio = _create_temp_wav()
+        self.addCleanup(temp_audio.unlink)
         args = cli.parse_args(
             [
                 "files",
-                "sample.wav",
+                str(temp_audio),
                 "--diarize",
                 "--diarize-num-speakers",
                 "2",
             ]
         )
 
-        transcription = FakeTranscriptionResult(filename="sample.wav", text="hello")
+        transcription = FakeTranscriptionResult(filename=temp_audio.name, text="hello")
         mock_transcribe_all = mock.Mock(return_value=[transcription])
         mock_transcribe_all_bytes = mock.Mock()
         mock_load_asr.return_value = (
@@ -89,12 +97,12 @@ class CLIDiarizeTests(unittest.TestCase):
         )
 
         diarization = FakeDiarizationResult(
-            filename="sample.wav",
+            filename=temp_audio.name,
             turns=[FakeSpeakerTurn(start=0.0, end=1.0, speaker="S0")],
         )
         mock_diarize_all = mock.Mock(return_value=[diarization])
         annotated = FakeSpeakerAnnotatedTranscript(
-            filename="sample.wav",
+            filename=temp_audio.name,
             segments=[
                 FakeSpeakerSegment(start=0.0, end=1.0, text="hello", speaker="S0"),
             ],
@@ -112,13 +120,13 @@ class CLIDiarizeTests(unittest.TestCase):
         mock_transcribe_all.assert_called_once()
         mock_diarize_all.assert_called_once()
         diarize_call = mock_diarize_all.call_args
-        self.assertEqual(diarize_call.args[0], ["sample.wav"])
+        self.assertEqual(diarize_call.args[0], [str(temp_audio)])
         options = diarize_call.kwargs["options"]
         self.assertEqual(options.num_speakers, 2)
         self.assertTrue(options.require_mps)
-        self.assertIn("sample.wav", args._speaker_transcripts)  # type: ignore[attr-defined]
-        self.assertIs(args._speaker_transcripts["sample.wav"], annotated)  # type: ignore[index]
-        self.assertIn("sample.wav", args._diarization_results)  # type: ignore[attr-defined]
+        self.assertIn(temp_audio.name, args._speaker_transcripts)  # type: ignore[attr-defined]
+        self.assertIs(args._speaker_transcripts[temp_audio.name], annotated)  # type: ignore[index]
+        self.assertIn(temp_audio.name, args._diarization_results)  # type: ignore[attr-defined]
 
     @mock.patch("src.cmd.cli._load_diarize_components")
     @mock.patch("src.cmd.cli._load_asr_components")
@@ -127,8 +135,11 @@ class CLIDiarizeTests(unittest.TestCase):
         mock_load_asr: mock.Mock,
         mock_load_diarize: mock.Mock,
     ) -> None:
+        temp_audio = _create_temp_wav()
+        self.addCleanup(temp_audio.unlink)
+
         transcription = FakeTranscriptionResult(
-            filename="sample.wav",
+            filename=temp_audio.name,
             text="こんにちは",
             segments=[FakeSegment(start=0.0, end=1.0, text="こんにちは")],
         )
@@ -141,12 +152,12 @@ class CLIDiarizeTests(unittest.TestCase):
         )
 
         diarization = FakeDiarizationResult(
-            filename="sample.wav",
+            filename=temp_audio.name,
             turns=[FakeSpeakerTurn(start=0.0, end=1.0, speaker="S1")],
         )
         mock_diarize_all = mock.Mock(return_value=[diarization])
         annotated = FakeSpeakerAnnotatedTranscript(
-            filename="sample.wav",
+            filename=temp_audio.name,
             segments=[
                 FakeSpeakerSegment(start=0.0, end=1.0, text="こんにちは", speaker="S1"),
             ],
@@ -160,7 +171,7 @@ class CLIDiarizeTests(unittest.TestCase):
 
         buf = io.StringIO()
         with redirect_stdout(buf):
-            cli.main(["files", "sample.wav", "--diarize", "--show-segments"])
+            cli.main(["files", str(temp_audio), "--diarize", "--show-segments"])
 
         output = buf.getvalue()
         self.assertIn("話者:", output)
@@ -177,17 +188,19 @@ class CLIDiarizeTests(unittest.TestCase):
         mock_load_asr: mock.Mock,
         mock_load_diarize: mock.Mock,
     ) -> None:
+        temp_audio = _create_temp_wav()
+        self.addCleanup(temp_audio.unlink)
         args = cli.parse_args(
             [
                 "files",
-                "sample.wav",
+                str(temp_audio),
                 "--diarize",
                 "--diarize-device",
                 "cpu",
             ]
         )
 
-        transcription = FakeTranscriptionResult(filename="sample.wav", text="hello")
+        transcription = FakeTranscriptionResult(filename=temp_audio.name, text="hello")
         mock_transcribe_all = mock.Mock(return_value=[transcription])
         mock_transcribe_all_bytes = mock.Mock()
         mock_load_asr.return_value = (
@@ -261,3 +274,13 @@ class CLIDiarizeTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+def _create_temp_wav() -> Path:
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        payload = (np.sin(np.linspace(0, np.pi, 160)).astype(np.float32) * 1000).astype(np.int16)
+        wav.writeframes(payload.tobytes())
+    return Path(path)

@@ -12,6 +12,7 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.polish import polish_text_from_segments
+from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
 from src.lib.audio import (
     InvalidAudioError,
     PreparedAudio,
@@ -81,18 +82,23 @@ def create_app() -> FastAPI:
                     logger.info("transcribe_silence_detected: %s", prepared.display_name)
 
                 entries.append(prepared)
+            model_name_resolved, language_resolved = resolve_model_and_language(
+                model,
+                language,
+                default_model=DEFAULT_MODEL_NAME,
+                default_language=DEFAULT_LANGUAGE,
+            )
 
-            non_silent_paths = [entry.path for entry in entries if not entry.silent]
-            results: list[TranscriptionResult] = []
-            if non_silent_paths:
-                results = await asyncio.to_thread(
-                    transcribe_all,
-                    non_silent_paths,
-                    model_name=model or DEFAULT_MODEL_NAME,
-                    language=language or DEFAULT_LANGUAGE,
-                    task=task,
-                )
-        except FileNotFoundError as exc:
+            updated = await asyncio.to_thread(
+                transcribe_prepared_audios,
+                entries,
+                model_name=model_name_resolved,
+                language=language_resolved,
+                task=task,
+                transcribe_all_fn=transcribe_all,
+            )
+
+        except (FileNotFoundError, InvalidAudioError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
             logger.exception("書き起こしに失敗しました: %s", [f.filename for f in files])
@@ -100,30 +106,6 @@ def create_app() -> FastAPI:
         finally:
             for entry in entries:
                 entry.path.unlink(missing_ok=True)
-
-        non_silent_count = sum(1 for entry in entries if not entry.silent)
-        if non_silent_count != len(results):
-            raise HTTPException(status_code=500, detail="書き起こし結果が不正です")
-
-        language_hint = language or DEFAULT_LANGUAGE
-        updated: list[TranscriptionResult] = []
-        result_iter = iter(results)
-        for entry in entries:
-            display_name = entry.display_name
-            if entry.silent:
-                updated.append(
-                    TranscriptionResult(
-                        filename=display_name,
-                        text="",
-                        language=language_hint,
-                        duration=0.0,
-                        segments=[],
-                    )
-                )
-                continue
-
-            result = next(result_iter)
-            updated.append(result.model_copy(update={"filename": display_name}))
 
         logger.debug(
             "transcribe_response: %s",
