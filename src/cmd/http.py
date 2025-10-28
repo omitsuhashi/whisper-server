@@ -132,11 +132,13 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        segments = [item.to_segment() for item in payload.segments]
+        segments = list(payload.to_segments())
 
         logger.debug(
-            "polish_request: segments=%d options=%s",
+            "polish_request: source=%s segments=%d text_len=%d options=%s",
+            "segments" if payload.segments else "text",
             len(segments),
+            len(payload.text or ""),
             payload.options.model_dump(exclude_unset=True) if payload.options else {},
         )
 
@@ -166,11 +168,13 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        segments = [item.to_segment() for item in payload.segments]
+        segments = list(payload.to_segments())
 
         logger.debug(
-            "polish_llm_request: segments=%d options=%s style=%s",
+            "polish_llm_request: source=%s segments=%d text_len=%d options=%s style=%s",
+            "segments" if payload.segments else "text",
             len(segments),
+            len(payload.text or ""),
             payload.options.model_dump(exclude_unset=True) if payload.options else {},
             payload.style or options.style,
         )

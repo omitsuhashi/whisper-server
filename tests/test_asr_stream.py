@@ -475,10 +475,7 @@ class HttpRestTests(unittest.TestCase):
         client = TestClient(app)
 
         payload = {
-            "segments": [
-                {"start": 0.0, "end": 1.5, "text": "こんにちは"},
-                {"start": 1.5, "end": 3.0, "text": "よろしくお願いします"},
-            ],
+            "text": "こんにちは\nよろしくお願いします",
             "options": {"style": "ですます"},
         }
 
@@ -494,19 +491,19 @@ class HttpRestTests(unittest.TestCase):
 
         args, kwargs = mock_polish.call_args
         segments = list(args[0])
-        self.assertEqual(len(segments), 2)
-        self.assertEqual(segments[0].text, "こんにちは")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].text, "こんにちは\nよろしくお願いします")
         options = kwargs["options"]
         self.assertEqual(options.style, "ですます")
 
-    def test_polish_endpoint_rejects_empty_segments(self) -> None:
+    def test_polish_endpoint_rejects_empty_payload(self) -> None:
         app = http_cmd.create_app()
         client = TestClient(app)
 
-        response = client.post("/polish", json={"segments": []})
+        response = client.post("/polish", json={"text": " "})
 
         self.assertEqual(response.status_code, 422)
-        self.assertIn("segments", response.text)
+        self.assertIn("text", response.text)
 
     @mock.patch("src.cmd.http.transcribe_prepared_audios")
     def test_transcribe_endpoint_skips_silent_audio(self, mock_transcribe_prepared: mock.Mock) -> None:

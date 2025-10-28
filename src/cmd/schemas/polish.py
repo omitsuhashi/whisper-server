@@ -45,14 +45,43 @@ class PolishSegmentPayload(BaseModel):
 
 
 class PolishRequestPayload(BaseModel):
-    segments: Sequence[PolishSegmentPayload] = Field(..., description="校正対象のセグメント列")
+    text: Optional[str] = Field(None, description="校正対象の全文。segments を省略した場合に利用")
+    segments: Optional[Sequence[PolishSegmentPayload]] = Field(
+        None,
+        description="校正対象のセグメント列。指定が無い場合は text を使用",
+    )
     options: Optional[PolishOptionsPayload] = Field(None, description="校正オプション")
 
     @model_validator(mode="after")
-    def validate_segments(self) -> "PolishRequestPayload":
-        if not self.segments:
-            raise ValueError("segments must not be empty")
-        return self
+    def validate_source(self) -> "PolishRequestPayload":
+        segments = list(self.segments) if self.segments else []
+        text_value = (self.text or "").strip()
+
+        if segments:
+            self.segments = tuple(segments)
+            return self
+
+        if text_value:
+            self.text = text_value
+            self.segments = None
+            return self
+
+        raise ValueError("text または segments のいずれかを指定してください")
+
+    def to_segments(self) -> Sequence[TranscriptionSegment]:
+        if self.segments:
+            return [item.to_segment() for item in self.segments]
+
+        assert self.text is not None  # validate_source で保証
+        return [
+            TranscriptionSegment.model_validate(
+                {
+                    "start": 0.0,
+                    "end": 0.0,
+                    "text": self.text,
+                }
+            )
+        ]
 
 
 class PolishedSentencePayload(BaseModel):

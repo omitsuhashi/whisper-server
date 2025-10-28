@@ -68,10 +68,7 @@ class PolishLLMEndpointTests(unittest.TestCase):
         client = TestClient(app)
 
         payload = {
-            "segments": [
-                {"start": 0.0, "end": 1.0, "text": "原文です。"},
-                {"start": 1.0, "end": 2.0, "text": "続きます。"},
-            ],
+            "text": "原文です。\n続きます。",
             "options": {"style": "ですます"},
             "style": "常体",
             "extra_instructions": "語尾を柔らかくしてください。",
@@ -113,7 +110,7 @@ class PolishLLMEndpointTests(unittest.TestCase):
         client = TestClient(app)
 
         payload = {
-            "segments": [{"start": 0.0, "end": 1.0, "text": "原文です。"}],
+            "text": "原文です。",
         }
 
         response = client.post("/polish/llm", json=payload)
@@ -138,7 +135,7 @@ class PolishLLMEndpointTests(unittest.TestCase):
         client = TestClient(app)
 
         payload = {
-            "segments": [{"start": 0.0, "end": 1.0, "text": "原文です。"}],
+            "text": "原文です。",
         }
 
         response = client.post("/polish/llm", json=payload)
