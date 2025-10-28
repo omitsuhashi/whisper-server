@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 
 @dataclass
@@ -35,6 +35,14 @@ class PolishOptions:
     )
     min_sentence_len: int = 6
     max_sentence_len: int = 200
+
+    def model_dump(self, *, exclude_none: bool = False, **_: Any) -> Dict[str, Any]:
+        """Pydantic BaseModel 互換のダンプメソッド。"""
+
+        data: Dict[str, Any] = dict(vars(self))
+        if exclude_none:
+            data = {key: value for key, value in data.items() if value is not None}
+        return data
 
 
 __all__ = ["PolishOptions"]
