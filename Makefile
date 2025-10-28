@@ -3,7 +3,7 @@ CLI := $(PYTHON) -m src.cmd.cli
 UVICORN := $(PYTHON) -m uvicorn
 HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
-HTTP_RELOAD ?= 1
+HTTP_RELOAD ?= 0
 LOG_LEVEL ?= INFO
 
 ifeq ($(firstword $(MAKECMDGOALS)),cli-files)
@@ -74,8 +74,8 @@ help:
 	@echo "  make audio-stream-polish [DEVICE=...] [SECONDS=...] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...]"
 	@echo "                               # マイク録音→CLI ストリーム (書き起こし後に校正、テキストのみ出力)"
 	@echo "  make audio-devices           # 利用可能な録音デバイス一覧を表示"
-	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=0|1] [LOG_LEVEL=DEBUG]"
-	@echo "                               # FastAPI サーバーを uvicorn で起動"
+	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=1] [LOG_LEVEL=DEBUG]"
+	@echo "                               # FastAPI サーバーを uvicorn で起動 (既定はリロード無効)"
 cli:
 	$(CLI)
 cli-help:
