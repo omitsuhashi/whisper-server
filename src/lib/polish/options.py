@@ -9,10 +9,6 @@ class PolishOptions:
     """校正オプション（すべて任意・安全なデフォルト）"""
 
     style: str = "ですます"  # "常体" も指定可
-    use_ginza: bool = True  # GiNZA を利用した文分割
-    ginza_model: str = "ja_ginza_electra"
-    ginza_model_fallbacks: Tuple[str, ...] = ("ja_ginza",)
-    ginza_fallback_to_heuristics: bool = True  # GiNZA 失敗時にヒューリスティクスへフォールバックするか
     remove_fillers: bool = True
     filler_patterns: Tuple[str, ...] = (
         r"(えー|あー|えっと|そのー|まー|なんか)(?:\s|$)",
@@ -29,7 +25,6 @@ class PolishOptions:
         r"v\d+\.\d+",  # v1.2
         r"[A-Za-z]+\d{2,}",  # 型番系
     )
-    # GiNZA 無し時のヒューリスティクス
     period_heuristics: Tuple[str, ...] = (
         r"(です|ます|でした|だ|である|でしょう|ですね|でしたら|でしたよね)$",
         r"([!?！？]+)$",

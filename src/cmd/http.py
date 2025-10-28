@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
-from src.lib.polish import polish_text_from_segments
+from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments
 from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
 from src.lib.audio import (
     InvalidAudioError,
@@ -25,6 +25,7 @@ from src.cmd.schemas.polish import (
     PolishRequestPayload,
     PolishResponsePayload,
     PolishedSentencePayload,
+    LLMPolishRequestPayload,
     build_polish_options,
 )
 
@@ -149,6 +150,59 @@ def create_app() -> FastAPI:
         combined_text = "\n".join(sentence.text for sentence in sentences).strip()
 
         logger.debug("polish_response: sentences=%d", len(response_sentences))
+
+        return PolishResponsePayload(
+            sentences=response_sentences,
+            text=combined_text,
+            sentence_count=len(response_sentences),
+        )
+
+    @app.post("/polish/llm", response_model=PolishResponsePayload)
+    async def polish_llm_endpoint(payload: LLMPolishRequestPayload) -> PolishResponsePayload:
+        """外部 LLM を用いた校正を行う。"""
+
+        try:
+            options = build_polish_options(payload.options)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        segments = [item.to_segment() for item in payload.segments]
+
+        logger.debug(
+            "polish_llm_request: segments=%d options=%s style=%s",
+            len(segments),
+            payload.options.model_dump(exclude_unset=True) if payload.options else {},
+            payload.style or options.style,
+        )
+
+        base_sentences = polish_text_from_segments(segments, options=options)
+
+        try:
+            polisher = LLMPolisher(
+                model_id=payload.model_id,
+                temperature=payload.temperature if payload.temperature is not None else 0.2,
+                top_p=payload.top_p if payload.top_p is not None else 0.9,
+                max_tokens=payload.max_tokens if payload.max_tokens is not None else 800,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        try:
+            polished_sentences = await asyncio.to_thread(
+                polisher.polish,
+                base_sentences,
+                style=payload.style or options.style,
+                extra_instructions=payload.extra_instructions,
+                parameters=payload.parameters,
+            )
+        except LLMPolishError as exc:
+            logger.exception("LLM 校正に失敗しました")
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        response_sentences = [PolishedSentencePayload(**sentence.model_dump()) for sentence in polished_sentences]
+        combined_text = "\n".join(sentence.text for sentence in polished_sentences).strip()
+
+        logger.debug("polish_llm_response: sentences=%d", len(response_sentences))
 
         return PolishResponsePayload(
             sentences=response_sentences,

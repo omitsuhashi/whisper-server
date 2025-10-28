@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -15,11 +15,6 @@ class PolishTermPairPayload(BaseModel):
 
 class PolishOptionsPayload(BaseModel):
     style: Optional[str] = Field(None, description="文体指定（例: ですます, 常体）")
-    use_ginza: Optional[bool] = Field(None, description="GiNZA による文分割を利用するか")
-    ginza_model: Optional[str] = Field(None, description="利用する GiNZA モデル名")
-    ginza_fallback_to_heuristics: Optional[bool] = Field(
-        None, description="GiNZA 失敗時にヒューリスティクスへフォールバックするか"
-    )
     remove_fillers: Optional[bool] = Field(None, description="フィラーワードを除去するか")
     filler_patterns: Optional[Sequence[str]] = Field(None, description="フィラーワードとして扱う正規表現の配列")
     normalize_width: Optional[bool] = Field(None, description="NFKC 正規化を適用するか")
@@ -72,6 +67,16 @@ class PolishResponsePayload(BaseModel):
     sentence_count: int
 
 
+class LLMPolishRequestPayload(PolishRequestPayload):
+    style: Optional[str] = Field(None, description="LLM 側へ指示する文体。未指定時は options.style を利用")
+    extra_instructions: Optional[str] = Field(None, description="モデルへ追加する日本語指示文")
+    parameters: Optional[dict[str, Any]] = Field(None, description="mlx_lm.generate に渡す追加パラメーター")
+    model_id: Optional[str] = Field(None, description="利用する mlx-lm モデル ID")
+    temperature: Optional[float] = Field(None, ge=0.0, description="サンプリング温度")
+    top_p: Optional[float] = Field(None, ge=0.0, le=1.0, description="トークン選択の top-p")
+    max_tokens: Optional[int] = Field(None, ge=1, description="生成する最大トークン数")
+
+
 def build_polish_options(payload: PolishOptionsPayload | None) -> PolishOptions:
     if payload is None:
         return PolishOptions()
@@ -98,4 +103,5 @@ __all__ = [
     "PolishTermPairPayload",
     "PolishOptions",
     "build_polish_options",
+    "LLMPolishRequestPayload",
 ]

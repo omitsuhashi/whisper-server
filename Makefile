@@ -5,6 +5,7 @@ HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 0
 LOG_LEVEL ?= INFO
+LLM_POLISH_MODEL ?= mlx-community/Qwen3-1.7B-MLX-MXFP4
 
 ifeq ($(firstword $(MAKECMDGOALS)),cli-files)
   CLI_FILES_EXTRA := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
@@ -153,8 +154,8 @@ http:
 	@RELOAD_FLAG=""; \
 	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
 	LOWER_LOG_LEVEL=$$(printf '%s' "$(LOG_LEVEL)" | tr '[:upper:]' '[:lower:]'); \
-	echo "LOG_LEVEL=$(LOG_LEVEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
-	LOG_LEVEL=$(LOG_LEVEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
+	echo "LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
+	LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
 
 test:
 	$(PYTHON) -m unittest discover -s tests

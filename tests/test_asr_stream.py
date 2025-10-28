@@ -479,7 +479,7 @@ class HttpRestTests(unittest.TestCase):
                 {"start": 0.0, "end": 1.5, "text": "こんにちは"},
                 {"start": 1.5, "end": 3.0, "text": "よろしくお願いします"},
             ],
-            "options": {"use_ginza": False, "style": "ですます"},
+            "options": {"style": "ですます"},
         }
 
         response = client.post("/polish", json=payload)
@@ -497,7 +497,6 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(len(segments), 2)
         self.assertEqual(segments[0].text, "こんにちは")
         options = kwargs["options"]
-        self.assertFalse(options.use_ginza)
         self.assertEqual(options.style, "ですます")
 
     def test_polish_endpoint_rejects_empty_segments(self) -> None:
