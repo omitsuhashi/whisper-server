@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import sys
 import time
@@ -20,6 +21,7 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
+from src.lib.polish import PolishedSentence, PolishOptions, polish_text_from_segments
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -27,6 +29,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from src.lib.diarize import DiarizationResult, SpeakerAnnotatedTranscript
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--log-level",
         default="INFO",
         help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
+    )
+    shared.add_argument(
+        "--polish",
+        action="store_true",
+        help="書き起こし結果に校正を適用する",
+    )
+    shared.add_argument(
+        "--plain-text",
+        action="store_true",
+        help="メタ情報を省きテキストのみ標準出力へ表示する",
     )
 
     file_parser = subparsers.add_parser(
@@ -239,6 +253,40 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _apply_polish(
+    results: list["TranscriptionResult"],
+    *,
+    options: PolishOptions | None = None,
+) -> tuple[list["TranscriptionResult"], dict[str, list[PolishedSentence]]]:
+    """書き起こし結果へ校正を適用し、更新済みモデルと文一覧を返す。"""
+
+    if not results:
+        return [], {}
+
+    opt = options or PolishOptions()
+    polished_map: dict[str, list[PolishedSentence]] = {}
+    updated: list[TranscriptionResult] = []
+
+    for result in results:
+        segments = getattr(result, "segments", []) or []
+        if not segments:
+            polished_map[result.filename] = []
+            updated.append(result)
+            continue
+
+        sentences = polish_text_from_segments(segments, options=opt)
+        polished_text = "\n".join(sentence.text for sentence in sentences).strip()
+        if hasattr(result, "model_copy"):
+            new_result = result.model_copy(update={"text": polished_text})
+        else:  # ダミーオブジェクト等
+            setattr(result, "text", polished_text)
+            new_result = result
+        polished_map[new_result.filename] = list(sentences)
+        updated.append(new_result)
+
+    return updated, polished_map
+
+
 def run_cli(
     args: argparse.Namespace,
 ) -> list["TranscriptionResult"] | list[FrameExtractionResult] | list["DiarizationResult"]:
@@ -261,6 +309,9 @@ def run_cli(
         default_language=DEFAULT_LANGUAGE,
     )
 
+    polish_enabled = getattr(args, "polish", False)
+    polish_options = PolishOptions() if polish_enabled else None
+
     args._stream_output = False  # type: ignore[attr-defined]
 
     if args.command == "stream":
@@ -269,6 +320,10 @@ def run_cli(
 
         chunk_size = args.stream_chunk_size if args.stream_chunk_size > 0 else STREAM_DEFAULT_CHUNK
         interval = max(float(args.stream_interval or 0.0), 0.0)
+
+        if polish_enabled and interval > 0.0:
+            logger.warning("polish オプション有効時は逐次出力を無効化します。最後にまとめて出力します。")
+            interval = 0.0
 
         if interval > 0:
             args._stream_output = True  # type: ignore[attr-defined]
@@ -280,18 +335,35 @@ def run_cli(
                 chunk_size=chunk_size,
                 interval=interval,
                 transcribe_all_bytes_fn=transcribe_all_bytes_fn,
+                emit_stdout=True,
             )
 
-        audio_bytes = sys.stdin.buffer.read()
+        audio_buffer = bytearray()
+        try:
+            while True:
+                chunk = sys.stdin.buffer.read(8192)
+                if not chunk:
+                    break
+                audio_buffer.extend(chunk)
+        except KeyboardInterrupt:
+            if not audio_buffer:
+                raise
+            logger.debug("stream_interrupt: received_bytes=%d", len(audio_buffer))
+        audio_bytes = bytes(audio_buffer)
         if not audio_bytes:
             raise ValueError("標準入力から音声データを読み取れませんでした。")
-        return transcribe_all_bytes_fn(
+        results = transcribe_all_bytes_fn(
             [audio_bytes],
             model_name=model_name,
             language=language,
             task=args.task,
             names=[args.name],
         )
+        if polish_enabled:
+            updated, polished_map = _apply_polish(results, options=polish_options)
+            args._polished_sentences = polished_map  # type: ignore[attr-defined]
+            return updated
+        return results
 
     if getattr(args, "diarize", False) and args.diarize_device not in (None, "mps"):
         raise RuntimeError("話者分離は MPS 専用です。--diarize-device には mps 以外を指定できません。")
@@ -311,6 +383,10 @@ def run_cli(
         task=args.task,
         transcribe_all_fn=transcribe_all_fn,
     )
+
+    if polish_enabled:
+        results, polished_map = _apply_polish(results, options=polish_options)
+        args._polished_sentences = polished_map  # type: ignore[attr-defined]
 
     if getattr(args, "diarize", False):
         if args.diarize_device not in (None, "mps"):
@@ -460,6 +536,7 @@ def _streaming_transcription(
     chunk_size: int,
     interval: float,
     transcribe_all_bytes_fn,
+    emit_stdout: bool = False,
 ) -> list["TranscriptionResult"]:
     """標準入力からのストリームを一定間隔で書き起こして標準出力へ追記する。"""
 
@@ -488,27 +565,34 @@ def _streaming_transcription(
         results = current_results
         current_text = current_results[0].text
 
-        if len(current_text) > len(last_emit_text):
+        if emit_stdout and len(current_text) > len(last_emit_text):
             new_text = current_text[len(last_emit_text) :]
             if new_text:
                 sys.stdout.write(new_text)
                 sys.stdout.flush()
-            last_emit_text = current_text
+        last_emit_text = current_text
 
-    while True:
-        chunk = stdin_buffer.read(chunk_size)
-        if not chunk:
-            break
-        audio_buffer.extend(chunk)
-        now = time.monotonic()
-        if (now - last_flush) >= interval:
-            flush(force=True)
-            last_flush = now
+    try:
+        while True:
+            chunk = stdin_buffer.read(chunk_size)
+            if not chunk:
+                break
+            audio_buffer.extend(chunk)
+            now = time.monotonic()
+            if (now - last_flush) >= interval:
+                flush(force=True)
+                last_flush = now
+    except KeyboardInterrupt:
+        if audio_buffer:
+            logger.debug("stream_interrupt: buffered_bytes=%d", len(audio_buffer))
+        else:
+            raise
 
     flush(force=True)
     if results:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        if emit_stdout:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         return results
     raise ValueError("標準入力から音声データを読み取れませんでした。")
 
@@ -552,11 +636,24 @@ def main(argv: Sequence[str] | None = None) -> None:
             print()
         return
 
-    for result in results:  # type: ignore[assignment]
+    plain_text = getattr(args, "plain_text", False)
+    stream_output = getattr(args, "_stream_output", False)
+
+    for index, result in enumerate(results):  # type: ignore[assignment]
+        if plain_text:
+            if stream_output:
+                continue
+            if index > 0:
+                print()
+            print(result.text)
+            continue
+
         print("=== ファイル:", result.filename)
         print("言語:", result.language or "不明")
         speaker_map: dict[str, Any] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
         diar_map = getattr(args, "_diarization_results", {})
+        polished_map: dict[str, list[PolishedSentence]] = getattr(args, "_polished_sentences", {})  # type: ignore[assignment]
+        polished_sentences = polished_map.get(result.filename)
         speaker_transcript = speaker_map.get(result.filename) if speaker_map else None
         diar_result = diar_map.get(result.filename) if diar_map else None
         if speaker_transcript:
@@ -564,7 +661,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif diar_result:
             print("話者:", ", ".join(diar_result.speakers) or "-")
         if not getattr(args, "_stream_output", False):
-            print("テキスト:\n", result.text)
+            label = "テキスト (校正済み)" if getattr(args, "polish", False) else "テキスト"
+            print(f"{label}:\n", result.text)
         if args.show_segments:
             if speaker_transcript:
                 print("--- 話者付きセグメント ---")
@@ -572,6 +670,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                     print(
                         f"[{segment.start:.2f}s - {segment.end:.2f}s] "
                         f"{segment.speaker}: {segment.text.strip()}",
+                    )
+            elif getattr(args, "polish", False) and polished_sentences:
+                print("--- 校正済み文一覧 ---")
+                for sentence in polished_sentences:
+                    print(
+                        f"[{sentence.start:.2f}s - {sentence.end:.2f}s] "
+                        f"{sentence.text.strip()}",
                     )
             else:
                 print("--- セグメント一覧 ---")
