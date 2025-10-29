@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -122,72 +123,57 @@ def create_app() -> FastAPI:
                 effective_chunk,
                 effective_overlap,
             )
-            # サブプロセス優先モード
+
+            transcribe_all_fn = None
+
             if _os.getenv("ASR_HTTP_SUBPROCESS", "0").lower() in {"1", "true", "on", "yes"}:
                 from src.lib.asr.subproc import transcribe_bytes_subprocess as _subproc
 
-                updated: list[TranscriptionResult] = []
-                for entry in entries:
-                    if entry.silent:
-                        updated.append(
-                            TranscriptionResult(
-                                filename=entry.display_name,
-                                text="",
-                                language=language_resolved,
-                                duration=0.0,
-                                segments=[],
-                            )
+                def _transcribe_subprocess(paths, *, model_name, language, task):
+                    results: list[TranscriptionResult] = []
+                    for path_like in paths:
+                        path_obj = Path(path_like)
+                        data = path_obj.read_bytes()
+                        res = _subproc(
+                            data,
+                            model_name=model_name,
+                            language=language,
+                            task=task,
+                            name=path_obj.name,
                         )
-                        continue
-                    data = entry.path.read_bytes()
-                    res = await asyncio.to_thread(
-                        _subproc,
-                        data,
-                        model_name=model_name_resolved,
-                        language=language_resolved,
-                        task=task,
-                        name=entry.display_name,
-                    )
-                    if res:
-                        updated.append(res[0])
-            else:
-                # チャンク処理（非サブプロセス）
-                non_silent_paths = [str(e.path) for e in entries if not e.silent]
-                if non_silent_paths:
-                    chunked = await asyncio.to_thread(
-                        transcribe_paths_chunked,
-                        non_silent_paths,
-                        model_name=model_name_resolved,
-                        language=language_resolved,
+                        if not res:
+                            continue
+                        first = res[0]
+                        if hasattr(first, "model_copy"):
+                            first = first.model_copy(update={"filename": path_obj.name})
+                        else:
+                            setattr(first, "filename", path_obj.name)
+                        results.append(first)
+                    return results
+
+                transcribe_all_fn = _transcribe_subprocess
+            elif effective_chunk > 0:
+
+                def _transcribe_chunked(paths, *, model_name, language, task):
+                    return transcribe_paths_chunked(
+                        paths,
+                        model_name=model_name,
+                        language=language,
                         task=task,
                         chunk_seconds=float(effective_chunk),
                         overlap_seconds=float(effective_overlap),
                     )
-                else:
-                    chunked = []
 
-                # 元の順序に合わせて filename などを反映
-                it = iter(chunked)
-                updated = []
-                for entry in entries:
-                    if entry.silent:
-                        updated.append(
-                            TranscriptionResult(
-                                filename=entry.display_name,
-                                text="",
-                                language=language_resolved,
-                                duration=0.0,
-                                segments=[],
-                            )
-                        )
-                    else:
-                        res = next(it)
-                        # display_name を上書き
-                        if hasattr(res, "model_copy"):
-                            res = res.model_copy(update={"filename": entry.display_name})
-                        else:
-                            setattr(res, "filename", entry.display_name)
-                        updated.append(res)
+                transcribe_all_fn = _transcribe_chunked
+
+            updated = await asyncio.to_thread(
+                transcribe_prepared_audios,
+                entries,
+                model_name=model_name_resolved,
+                language=language_resolved,
+                task=task,
+                transcribe_all_fn=transcribe_all_fn,
+            )
 
         except (FileNotFoundError, InvalidAudioError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

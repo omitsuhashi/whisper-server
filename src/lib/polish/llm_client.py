@@ -9,6 +9,7 @@ import gc
 
 from importlib import import_module
 
+from .exceptions import LLMPolishError
 from .models import PolishedSentence
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,6 @@ def _ensure_mlx_loaded() -> None:
         raise ValueError(
             "mlx-lm がロードできません。'pip install -U mlx mlx-lm' を実行してから再度試してください。"
         ) from exc
-
-
-class LLMPolishError(RuntimeError):
-    """LLM を使った校正処理の失敗を表す例外。"""
-
 
 class LLMPolisher:
     """mlx-lm を利用したローカル LLM 校正クライアント。"""
