@@ -1,4 +1,4 @@
-from .utils import AudioDecodeError, coerce_to_bytes, decode_audio_bytes
+from .utils import AudioDecodeError, coerce_to_bytes, decode_audio_bytes, encode_waveform_to_wav_bytes
 from .inspection import (
     InvalidAudioError,
     PreparedAudio,
@@ -13,6 +13,7 @@ __all__ = [
     "AudioDecodeError",
     "coerce_to_bytes",
     "decode_audio_bytes",
+    "encode_waveform_to_wav_bytes",
     "InvalidAudioError",
     "PreparedAudio",
     "dump_audio_for_debug",

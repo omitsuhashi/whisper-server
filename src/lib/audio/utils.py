@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from subprocess import CalledProcessError, run
+from io import BytesIO
+import wave
 
 import numpy as np
 
@@ -75,8 +77,27 @@ def decode_audio_bytes(audio_bytes: bytes, *, sample_rate: int) -> np.ndarray:
     return waveform / 32768.0
 
 
+def encode_waveform_to_wav_bytes(waveform: np.ndarray, *, sample_rate: int) -> bytes:
+    """Encode mono float waveform (-1..1) to 16-bit PCM WAV bytes."""
+
+    if waveform.ndim != 1:
+        raise ValueError(f"encode_waveform_to_wav_bytes expects 1-D mono waveform, got {waveform.shape}")
+    wf = waveform.astype(np.float32)
+    wf = np.clip(wf, -1.0, 1.0)
+    pcm16 = (wf * 32767.0).astype(np.int16)
+
+    buf = BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate))
+        w.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
 __all__ = [
     "AudioDecodeError",
     "coerce_to_bytes",
     "decode_audio_bytes",
+    "encode_waveform_to_wav_bytes",
 ]

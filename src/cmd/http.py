@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
+from src.lib.asr.chunking import transcribe_paths_chunked
 import os
 from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments, unload_llm_models
 from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
@@ -51,6 +52,8 @@ def create_app() -> FastAPI:
         model: str = Form(DEFAULT_MODEL_NAME),
         language: Optional[str] = Form(None),
         task: Optional[str] = Form(None),
+        chunk_seconds: Optional[float] = Form(None),
+        overlap_seconds: Optional[float] = Form(None),
     ) -> list[TranscriptionResult]:
         """アップロードされた音声群を書き起こして返す。"""
 
@@ -91,14 +94,101 @@ def create_app() -> FastAPI:
                 default_language=DEFAULT_LANGUAGE,
             )
 
-            updated = await asyncio.to_thread(
-                transcribe_prepared_audios,
-                entries,
-                model_name=model_name_resolved,
-                language=language_resolved,
-                task=task,
-                transcribe_all_fn=transcribe_all,
+            # チャンクとオーバーラップ秒の解決: フォーム値 > 環境変数 > 既定
+            import os as _os
+
+            default_chunk = 25.0
+            default_overlap = 1.0
+
+            def _resolve_float(raw: Optional[str], fallback: float) -> float:
+                if raw is None:
+                    return fallback
+                try:
+                    return float(raw)
+                except ValueError:
+                    return fallback
+
+            env_chunk = _resolve_float(_os.getenv("ASR_CHUNK_SECONDS"), default_chunk)
+            env_overlap = _resolve_float(_os.getenv("ASR_OVERLAP_SECONDS"), default_overlap)
+
+            effective_chunk = float(chunk_seconds) if chunk_seconds is not None else env_chunk
+            effective_overlap = float(overlap_seconds) if overlap_seconds is not None else env_overlap
+            if effective_chunk <= 0:
+                effective_overlap = 0.0
+            else:
+                effective_overlap = max(0.0, min(effective_overlap, effective_chunk / 2))
+
+            logger.debug(
+                "transcribe_chunking: chunk_seconds=%s overlap_seconds=%s",
+                effective_chunk,
+                effective_overlap,
             )
+            # サブプロセス優先モード
+            if _os.getenv("ASR_HTTP_SUBPROCESS", "0").lower() in {"1", "true", "on", "yes"}:
+                from src.lib.asr.subproc import transcribe_bytes_subprocess as _subproc
+
+                updated: list[TranscriptionResult] = []
+                for entry in entries:
+                    if entry.silent:
+                        updated.append(
+                            TranscriptionResult(
+                                filename=entry.display_name,
+                                text="",
+                                language=language_resolved,
+                                duration=0.0,
+                                segments=[],
+                            )
+                        )
+                        continue
+                    data = entry.path.read_bytes()
+                    res = await asyncio.to_thread(
+                        _subproc,
+                        data,
+                        model_name=model_name_resolved,
+                        language=language_resolved,
+                        task=task,
+                        name=entry.display_name,
+                    )
+                    if res:
+                        updated.append(res[0])
+            else:
+                # チャンク処理（非サブプロセス）
+                non_silent_paths = [str(e.path) for e in entries if not e.silent]
+                if non_silent_paths:
+                    chunked = await asyncio.to_thread(
+                        transcribe_paths_chunked,
+                        non_silent_paths,
+                        model_name=model_name_resolved,
+                        language=language_resolved,
+                        task=task,
+                        chunk_seconds=float(effective_chunk),
+                        overlap_seconds=float(effective_overlap),
+                    )
+                else:
+                    chunked = []
+
+                # 元の順序に合わせて filename などを反映
+                it = iter(chunked)
+                updated = []
+                for entry in entries:
+                    if entry.silent:
+                        updated.append(
+                            TranscriptionResult(
+                                filename=entry.display_name,
+                                text="",
+                                language=language_resolved,
+                                duration=0.0,
+                                segments=[],
+                            )
+                        )
+                    else:
+                        res = next(it)
+                        # display_name を上書き
+                        if hasattr(res, "model_copy"):
+                            res = res.model_copy(update={"filename": entry.display_name})
+                        else:
+                            setattr(res, "filename", entry.display_name)
+                        updated.append(res)
 
         except (FileNotFoundError, InvalidAudioError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

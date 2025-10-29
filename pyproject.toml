@@ -19,4 +19,5 @@ dependencies = [
     "tqdm>=4.67.1",
     "mlx>=0.29.3",
     "mlx-lm>=0.28.3",
+    "psutil>=5.9.0",
 ]
