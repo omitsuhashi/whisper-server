@@ -89,11 +89,17 @@ def _merge_results(
             )
 
     segments.sort(key=lambda s: (float(getattr(s, "start", 0.0)), float(getattr(s, "end", 0.0))))
-    combined_text = "\n".join(seg.text.strip() for seg in segments if getattr(seg, "text", "").strip()).strip()
+    text_parts: List[str] = []
+    for seg in segments:
+        seg_text = getattr(seg, "text", "")
+        if not seg_text:
+            continue
+        text_parts.append(seg_text)
+    combined_text = "".join(text_parts).strip()
     duration = segments[-1].end if segments else None
 
     if not segments:
-        fallback_text = "\n".join(res.text.strip() for res in partials if getattr(res, "text", "").strip()).strip()
+        fallback_text = "".join(res.text or "" for res in partials).strip()
         if fallback_text:
             combined_text = fallback_text
         if chunk_windows:

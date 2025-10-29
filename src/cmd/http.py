@@ -12,7 +12,6 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.asr.chunking import transcribe_paths_chunked
-import os
 from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments, unload_llm_models
 from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
 from src.lib.audio import (
