@@ -9,6 +9,7 @@ import numpy as np
 from mlx_whisper import transcribe
 
 from ..audio import AudioDecodeError, coerce_to_bytes, decode_audio_bytes, is_silent_audio
+from ..diagnostics.memlog import snapshot as _memsnap
 from .converters import build_transcription_result
 from .models import TranscriptionResult
 from .options import TranscribeOptions
@@ -125,7 +126,9 @@ def _transcribe_single(
 ) -> TranscriptionResult:
     """transcribeを呼び出しTranscriptionResultへ変換する。"""
 
+    _memsnap("asr_pre_transcribe", extra={"model": model_name, "input_type": type(audio_input).__name__})
     raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **transcribe_kwargs)
+    _memsnap("asr_post_transcribe", extra={"segments": len(raw_result.get("segments") or [])})
     if _should_force_silence(raw_result):
         logger.info("silence_by_model: %s", display_name)
         return _build_silence_result(

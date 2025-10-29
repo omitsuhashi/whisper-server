@@ -75,8 +75,8 @@ help:
 	@echo "  make audio-stream-polish [DEVICE=...] [SECONDS=...] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...]"
 	@echo "                               # マイク録音→CLI ストリーム (書き起こし後に校正、テキストのみ出力)"
 	@echo "  make audio-devices           # 利用可能な録音デバイス一覧を表示"
-	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=1] [LOG_LEVEL=DEBUG]"
-	@echo "                               # FastAPI サーバーを uvicorn で起動 (既定はリロード無効)"
+	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=1] [LOG_LEVEL=DEBUG] [MEM_DIAG=1]"
+	@echo "                               # FastAPI サーバーを uvicorn で起動 (MEM_DIAG=1 でメモリ診断ログを有効化)"
 cli:
 	$(CLI)
 cli-help:
@@ -154,8 +154,10 @@ http:
 	@RELOAD_FLAG=""; \
 	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
 	LOWER_LOG_LEVEL=$$(printf '%s' "$(LOG_LEVEL)" | tr '[:upper:]' '[:lower:]'); \
-	echo "LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
-	LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL) $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
+	ENVV="LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL)"; \
+	if [ "$(MEM_DIAG)" = "1" ]; then ENVV="$$ENVV MEM_DIAG=1"; fi; \
+	echo "env $$ENVV $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
+	env $$ENVV $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL
 
 test:
 	$(PYTHON) -m unittest discover -s tests
