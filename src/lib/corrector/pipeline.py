@@ -3,21 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator, Sequence
 
-from .types import (
-    CorrectionOptions,
-    CorrectionPatch,
-    CorrectionRequest,
-    CorrectionResult,
-    CorrectionSpan,
-    apply_patches,
-)
-
-_SENTENCE_TERMINATORS = {"。", "．", "!", "！", "?", "？", "…", "⋯"}
+from .tagger.model import BaseTagger, RuleBasedPunctTagger
+from .types import CorrectionOptions, CorrectionPatch, CorrectionRequest, CorrectionResult, apply_patches
 
 
 @dataclass
 class CorrectionPipeline:
     default_options: CorrectionOptions = field(default_factory=CorrectionOptions)
+    tagger: BaseTagger = field(default_factory=RuleBasedPunctTagger)
 
     def run(self, request: CorrectionRequest) -> CorrectionResult:
         options = CorrectionOptions(
@@ -26,8 +19,14 @@ class CorrectionPipeline:
             normalize_numbers=request.options.normalize_numbers
             or self.default_options.normalize_numbers,
         )
+        resolved_request = CorrectionRequest(
+            text=request.text,
+            context_prev=request.context_prev,
+            language=request.language,
+            options=options,
+        )
         patches: list[CorrectionPatch] = []
-        patches.extend(self._maybe_insert_sentence_terminator(request.text, options))
+        patches.extend(self.tagger.predict(resolved_request))
 
         corrected = apply_patches(request.text, patches)
         return CorrectionResult(
@@ -58,31 +57,6 @@ class CorrectionPipeline:
                 options=options or self.default_options,
             )
             yield self.run(request)
-
-    def _maybe_insert_sentence_terminator(
-        self,
-        text: str,
-        options: CorrectionOptions,
-    ) -> list[CorrectionPatch]:
-        if not options.aggressive_kuten:
-            return []
-
-        stripped = text.rstrip()
-        if not stripped:
-            return []
-        last_char = stripped[-1]
-        if last_char in _SENTENCE_TERMINATORS:
-            return []
-
-        insertion_index = len(stripped)
-        patch = CorrectionPatch(
-            span=CorrectionSpan(start=insertion_index, end=insertion_index),
-            replacement="。",
-            tags=("PUNCT",),
-            confidence=0.55,
-        )
-        return [patch]
-
 
 def run_correction(
     text: str,

@@ -22,6 +22,7 @@ from src.lib.audio import (
     prepare_audio,
 )
 from src.lib.corrector import CorrectionError, run_correction
+from src.lib.diagnostics.memwatch import ensure_memory_watchdog
 from src.cmd.schemas.corrector import (
     CorrectionRequestPayload,
     CorrectionResponsePayload,
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     """FastAPIアプリケーションを構築して返す。"""
 
     setup_logging()
+    ensure_memory_watchdog()
     app = FastAPI(title="mlx Whisper ASR")
 
     @app.get("/healthz")

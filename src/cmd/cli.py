@@ -23,6 +23,7 @@ from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.corrector import CorrectionOptions, CorrectionResult
 from src.lib.corrector.integration import apply_corrections_to_results
+from src.lib.diagnostics.memwatch import ensure_memory_watchdog
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 from src.lib.context import (
     IntegratedMeetingContext,
@@ -315,6 +316,7 @@ def run_cli(
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
     setup_logging(args.log_level)
+    ensure_memory_watchdog()
 
     if args.command == "frames":
         return _extract_frames(args)
