@@ -4,6 +4,7 @@ from __future__ import annotations
 from .integration import apply_corrections_to_results
 from .pipeline import CorrectionPipeline, run_correction
 from .types import (
+    CorrectionError,
     CorrectionOptions,
     CorrectionPatch,
     CorrectionRequest,
@@ -22,4 +23,5 @@ __all__ = [
     "CorrectionResult",
     "CorrectionSpan",
     "apply_patches",
+    "CorrectionError",
 ]

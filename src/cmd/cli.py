@@ -23,7 +23,6 @@ from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.corrector import CorrectionOptions, CorrectionResult
 from src.lib.corrector.integration import apply_corrections_to_results
-from src.lib.polish import PolishedSentence, PolishOptions, polish_text_from_segments
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 from src.lib.context import (
     IntegratedMeetingContext,
@@ -82,11 +81,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--log-level",
         default="INFO",
         help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
-    )
-    shared.add_argument(
-        "--polish",
-        action="store_true",
-        help="書き起こし結果に校正を適用する",
     )
     shared.add_argument(
         "--corrector",
@@ -315,40 +309,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _apply_polish(
-    results: list["TranscriptionResult"],
-    *,
-    options: PolishOptions | None = None,
-) -> tuple[list["TranscriptionResult"], dict[str, list[PolishedSentence]]]:
-    """書き起こし結果へ校正を適用し、更新済みモデルと文一覧を返す。"""
-
-    if not results:
-        return [], {}
-
-    opt = options or PolishOptions()
-    polished_map: dict[str, list[PolishedSentence]] = {}
-    updated: list[TranscriptionResult] = []
-
-    for result in results:
-        segments = getattr(result, "segments", []) or []
-        if not segments:
-            polished_map[result.filename] = []
-            updated.append(result)
-            continue
-
-        sentences = polish_text_from_segments(segments, options=opt)
-        polished_text = "\n".join(sentence.text for sentence in sentences).strip()
-        if hasattr(result, "model_copy"):
-            new_result = result.model_copy(update={"text": polished_text})
-        else:  # ダミーオブジェクト等
-            setattr(result, "text", polished_text)
-            new_result = result
-        polished_map[new_result.filename] = list(sentences)
-        updated.append(new_result)
-
-    return updated, polished_map
-
-
 def run_cli(
     args: argparse.Namespace,
 ) -> list["TranscriptionResult"] | list[FrameExtractionResult] | list["DiarizationResult"]:
@@ -371,9 +331,6 @@ def run_cli(
         default_language=DEFAULT_LANGUAGE,
     )
 
-    polish_enabled = getattr(args, "polish", False)
-    polish_options = PolishOptions() if polish_enabled else None
-
     corrector_enabled = getattr(args, "corrector", False)
     corrector_options = None
     if corrector_enabled:
@@ -391,9 +348,6 @@ def run_cli(
         chunk_size = args.stream_chunk_size if args.stream_chunk_size > 0 else STREAM_DEFAULT_CHUNK
         interval = max(float(args.stream_interval or 0.0), 0.0)
 
-        if polish_enabled and interval > 0.0:
-            logger.warning("polish オプション有効時は逐次出力を無効化します。最後にまとめて出力します。")
-            interval = 0.0
         if corrector_enabled and interval > 0.0:
             logger.warning("corrector オプション有効時は逐次出力を無効化します。最後にまとめて出力します。")
             interval = 0.0
@@ -439,10 +393,6 @@ def run_cli(
                 options=corrector_options or CorrectionOptions(),
             )
             args._correction_results = correction_map  # type: ignore[attr-defined]
-        if polish_enabled:
-            updated, polished_map = _apply_polish(results, options=polish_options)
-            args._polished_sentences = polished_map  # type: ignore[attr-defined]
-            return updated
         return results
 
     if getattr(args, "diarize", False) and args.diarize_device not in (None, "mps"):
@@ -471,10 +421,6 @@ def run_cli(
             options=corrector_options or CorrectionOptions(),
         )
         args._correction_results = correction_map  # type: ignore[attr-defined]
-
-    if polish_enabled:
-        results, polished_map = _apply_polish(results, options=polish_options)
-        args._polished_sentences = polished_map  # type: ignore[attr-defined]
 
     if getattr(args, "diarize", False):
         if args.diarize_device not in (None, "mps"):
@@ -799,8 +745,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("言語:", result.language or "不明")
         speaker_map: dict[str, Any] = getattr(args, "_speaker_transcripts", {})  # type: ignore[assignment]
         diar_map = getattr(args, "_diarization_results", {})
-        polished_map: dict[str, list[PolishedSentence]] = getattr(args, "_polished_sentences", {})  # type: ignore[assignment]
-        polished_sentences = polished_map.get(result.filename)
         correction = correction_map.get(result.filename)
         speaker_transcript = speaker_map.get(result.filename) if speaker_map else None
         diar_result = diar_map.get(result.filename) if diar_map else None
@@ -809,8 +753,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif diar_result:
             print("話者:", ", ".join(diar_result.speakers) or "-")
         if not getattr(args, "_stream_output", False):
-            label = "テキスト (校正済み)" if getattr(args, "polish", False) else "テキスト"
-            print(f"{label}:\n", result.text)
+            print("テキスト:\n", result.text)
             if correction and correction.patches:
                 print("--- 校正パッチ ---")
                 for patch in correction.patches:
@@ -826,13 +769,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                     print(
                         f"[{segment.start:.2f}s - {segment.end:.2f}s] "
                         f"{segment.speaker}: {segment.text.strip()}",
-                    )
-            elif getattr(args, "polish", False) and polished_sentences:
-                print("--- 校正済み文一覧 ---")
-                for sentence in polished_sentences:
-                    print(
-                        f"[{sentence.start:.2f}s - {sentence.end:.2f}s] "
-                        f"{sentence.text.strip()}",
                     )
             else:
                 print("--- セグメント一覧 ---")

@@ -45,7 +45,6 @@ from src.cmd import http as http_cmd
 from src.lib.asr import TranscriptionResult
 from src.lib.asr import main as asr_main
 from src.lib.audio import PreparedAudio
-from src.lib.polish import PolishedSentence
 
 
 def _generate_wav_bytes(duration_sec: float = 0.1) -> bytes:
@@ -268,120 +267,6 @@ class CliStreamTests(unittest.TestCase):
         self.assertEqual(results, [second])
         self.assertEqual(mock_transcribe_bytes.call_count, 3)
 
-    @mock.patch("src.cmd.cli.polish_text_from_segments")
-    @mock.patch("src.cmd.cli._load_asr_components")
-    def test_stream_subcommand_applies_polish_when_requested(
-        self,
-        mock_load_asr: mock.Mock,
-        mock_polish: mock.Mock,
-    ) -> None:
-        raw_result = TranscriptionResult(
-            filename="stdin",
-            text="raw",
-            segments=[{"start": 0.0, "end": 1.0, "text": "raw"}],
-        )
-        mock_transcribe_all = mock.Mock()
-        mock_transcribe_bytes = mock.Mock(return_value=[raw_result])
-        mock_load_asr.return_value = (
-            TranscriptionResult,
-            mock_transcribe_all,
-            mock_transcribe_bytes,
-        )
-
-        polished_sentence = PolishedSentence(start=0.0, end=1.0, text="rawでした。")
-        mock_polish.return_value = [polished_sentence]
-
-        fake_stdin = FakeStdin(self.audio_bytes)
-        original_stdin = cli.sys.stdin
-        cli.sys.stdin = fake_stdin
-
-        try:
-            args = cli.parse_args(["stream", "--model", "fake", "--polish"])
-            results = cli.run_cli(args)
-        finally:
-            cli.sys.stdin = original_stdin
-
-        mock_transcribe_bytes.assert_called_once()
-        mock_polish.assert_called_once()
-        self.assertFalse(getattr(args, "_stream_output", False))
-        self.assertTrue(getattr(args, "polish", False))
-        self.assertEqual(results[0].text, "rawでした。")
-        polished_map = getattr(args, "_polished_sentences", {})
-        self.assertIn("stdin", polished_map)
-        self.assertEqual(polished_map["stdin"][0].text, "rawでした。")
-
-    @mock.patch("src.cmd.cli.polish_text_from_segments")
-    @mock.patch("src.cmd.cli._load_asr_components")
-    def test_stream_subcommand_handles_keyboard_interrupt(
-        self,
-        mock_load_asr: mock.Mock,
-        mock_polish: mock.Mock,
-    ) -> None:
-        raw_result = TranscriptionResult(
-            filename="stdin",
-            text="raw",
-            segments=[{"start": 0.0, "end": 1.0, "text": "raw"}],
-        )
-        mock_transcribe_all = mock.Mock()
-        mock_transcribe_bytes = mock.Mock(return_value=[raw_result])
-        mock_load_asr.return_value = (
-            TranscriptionResult,
-            mock_transcribe_all,
-            mock_transcribe_bytes,
-        )
-
-        polished_sentence = PolishedSentence(start=0.0, end=1.0, text="仕上げ")
-        mock_polish.return_value = [polished_sentence]
-
-        interrupt_buffer = _InterruptBuffer([b"audio", KeyboardInterrupt()])
-        fake_stdin = types.SimpleNamespace(buffer=interrupt_buffer)
-        original_stdin = cli.sys.stdin
-        cli.sys.stdin = fake_stdin
-
-        try:
-            args = cli.parse_args(["stream", "--model", "fake", "--polish"])
-            results = cli.run_cli(args)
-        finally:
-            cli.sys.stdin = original_stdin
-
-        self.assertEqual(results[0].text, "仕上げ")
-        mock_polish.assert_called_once()
-
-    @mock.patch("src.cmd.cli.transcribe_prepared_audios")
-    @mock.patch("src.cmd.cli.prepare_audio")
-    @mock.patch("src.cmd.cli._load_asr_components")
-    def test_files_subcommand_applies_polish(
-        self,
-        mock_load_asr: mock.Mock,
-        mock_prepare_audio: mock.Mock,
-        mock_transcribe_prepared: mock.Mock,
-    ) -> None:
-        mock_load_asr.return_value = (
-            TranscriptionResult,
-            mock.Mock(),
-            mock.Mock(),
-        )
-        prepared = PreparedAudio(path=Path("dummy.wav"), display_name="dummy.wav", silent=False)
-        mock_prepare_audio.return_value = prepared
-
-        raw_result = TranscriptionResult(
-            filename="dummy.wav",
-            text="raw",
-            segments=[{"start": 0.0, "end": 1.0, "text": "raw"}],
-        )
-        mock_transcribe_prepared.return_value = [raw_result]
-
-        with mock.patch("src.cmd.cli.polish_text_from_segments") as mock_polish:
-            mock_polish.return_value = [PolishedSentence(start=0.0, end=1.0, text="polished")]
-            args = cli.parse_args(["files", "--model", "fake", "--polish", "sample.wav"])
-            results = cli.run_cli(args)
-
-        mock_prepare_audio.assert_called_once()
-        mock_transcribe_prepared.assert_called_once()
-        self.assertEqual(results[0].text, "polished")
-        polished_map = getattr(args, "_polished_sentences", {})
-        self.assertEqual(polished_map["dummy.wav"][0].text, "polished")
-
     @mock.patch("src.cmd.cli.run_cli")
     @mock.patch("src.cmd.cli.parse_args")
     def test_main_plain_text_outputs_text_only(
@@ -393,7 +278,6 @@ class CliStreamTests(unittest.TestCase):
         args = argparse.Namespace(
             command="files",
             plain_text=True,
-            polish=False,
             show_segments=False,
             log_level="INFO",
             _stream_output=False,
@@ -463,47 +347,6 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(len(list(args[0])), 2)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(kwargs["language"], "ja")
-
-    @mock.patch("src.cmd.http.polish_text_from_segments")
-    def test_polish_endpoint_returns_polished_sentences(self, mock_polish: mock.Mock) -> None:
-        mock_polish.return_value = [
-            PolishedSentence(start=0.0, end=1.5, text="こんにちは。"),
-            PolishedSentence(start=1.5, end=3.0, text="よろしくお願いします。"),
-        ]
-
-        app = http_cmd.create_app()
-        client = TestClient(app)
-
-        payload = {
-            "text": "こんにちは\nよろしくお願いします",
-            "options": {"style": "ですます"},
-        }
-
-        response = client.post("/polish", json=payload)
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["sentence_count"], 2)
-        self.assertEqual(body["text"], "こんにちは。\nよろしくお願いします。")
-        self.assertEqual(len(body["sentences"]), 2)
-        self.assertEqual(body["sentences"][0]["start"], 0.0)
-        self.assertEqual(body["sentences"][1]["text"], "よろしくお願いします。")
-
-        args, kwargs = mock_polish.call_args
-        segments = list(args[0])
-        self.assertEqual(len(segments), 1)
-        self.assertEqual(segments[0].text, "こんにちは\nよろしくお願いします")
-        options = kwargs["options"]
-        self.assertEqual(options.style, "ですます")
-
-    def test_polish_endpoint_rejects_empty_payload(self) -> None:
-        app = http_cmd.create_app()
-        client = TestClient(app)
-
-        response = client.post("/polish", json={"text": " "})
-
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("text", response.text)
 
     @mock.patch("src.cmd.http.transcribe_prepared_audios")
     def test_transcribe_endpoint_skips_silent_audio(self, mock_transcribe_prepared: mock.Mock) -> None:

@@ -13,8 +13,7 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.asr.chunking import transcribe_paths_chunked
-from src.lib.polish import LLMPolishError, LLMPolisher, polish_text_from_segments, unload_llm_models
-from src.lib.asr.service import transcribe_prepared_audios, resolve_model_and_language
+from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.audio import (
     InvalidAudioError,
     PreparedAudio,
@@ -22,13 +21,12 @@ from src.lib.audio import (
     infer_suffix,
     prepare_audio,
 )
-from src.cmd.schemas.polish import (
-    PolishOptionsPayload,
-    PolishRequestPayload,
-    PolishResponsePayload,
-    PolishedSentencePayload,
-    LLMPolishRequestPayload,
-    build_polish_options,
+from src.lib.corrector import CorrectionError, run_correction
+from src.cmd.schemas.corrector import (
+    CorrectionRequestPayload,
+    CorrectionResponsePayload,
+    CorrectionPatchPayload,
+    build_correction_options,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +43,53 @@ def create_app() -> FastAPI:
         """死活監視用エンドポイント。"""
 
         return {"status": "ok"}
+
+    @app.post("/correct", response_model=CorrectionResponsePayload)
+    async def correct_endpoint(payload: CorrectionRequestPayload) -> CorrectionResponsePayload:
+        """文脈校正パイプラインを適用して差分パッチを返す。"""
+
+        try:
+            options = build_correction_options(payload.options)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        context_prev = payload.context_tuple()
+        language = payload.language_or_default()
+
+        logger.debug(
+            "correct_request: text_len=%d context=%d language=%s options=%s",
+            len(payload.text),
+            len(context_prev),
+            language,
+            options.as_dict(),
+        )
+
+        try:
+            result = await asyncio.to_thread(
+                run_correction,
+                payload.text,
+                context_prev=context_prev,
+                language=language,
+                options=options,
+            )
+        except CorrectionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        patches = [CorrectionPatchPayload.from_patch(patch) for patch in result.patches]
+
+        logger.debug(
+            "correct_response: patch_count=%d text_len=%d",
+            len(patches),
+            len(result.corrected_text),
+        )
+
+        return CorrectionResponsePayload(
+            source_text=result.source_text,
+            text=result.corrected_text,
+            patches=patches,
+            patch_count=len(patches),
+            options=options.as_dict(),
+        )
 
     @app.post("/transcribe", response_model=list[TranscriptionResult])
     async def transcribe_endpoint(  # noqa: PLR0912 - 例外処理で分岐が増える
@@ -198,112 +243,6 @@ def create_app() -> FastAPI:
         )
 
         return updated
-
-    @app.post("/polish", response_model=PolishResponsePayload)
-    async def polish_endpoint(payload: PolishRequestPayload) -> PolishResponsePayload:
-        """書き起こしセグメントを校正して返す。"""
-
-        try:
-            options = build_polish_options(payload.options)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        segments = list(payload.to_segments())
-
-        logger.debug(
-            "polish_request: source=%s segments=%d text_len=%d options=%s",
-            "segments" if payload.segments else "text",
-            len(segments),
-            len(payload.text or ""),
-            payload.options.model_dump(exclude_unset=True) if payload.options else {},
-        )
-
-        try:
-            sentences = polish_text_from_segments(segments, options=options)
-        except RuntimeError as exc:
-            logger.exception("文章構成に失敗しました")
-            raise HTTPException(status_code=500, detail="文章構成に失敗しました") from exc
-
-        response_sentences = [PolishedSentencePayload(**sentence.model_dump()) for sentence in sentences]
-        combined_text = "\n".join(sentence.text for sentence in sentences).strip()
-
-        logger.debug("polish_response: sentences=%d", len(response_sentences))
-
-        return PolishResponsePayload(
-            sentences=response_sentences,
-            text=combined_text,
-            sentence_count=len(response_sentences),
-        )
-
-    @app.post("/polish/llm", response_model=PolishResponsePayload)
-    async def polish_llm_endpoint(payload: LLMPolishRequestPayload) -> PolishResponsePayload:
-        """外部 LLM を用いた校正を行う。"""
-
-        try:
-            options = build_polish_options(payload.options)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        segments = list(payload.to_segments())
-
-        logger.debug(
-            "polish_llm_request: source=%s segments=%d text_len=%d options=%s style=%s",
-            "segments" if payload.segments else "text",
-            len(segments),
-            len(payload.text or ""),
-            payload.options.model_dump(exclude_unset=True) if payload.options else {},
-            payload.style or options.style,
-        )
-
-        base_sentences = polish_text_from_segments(segments, options=options)
-
-        try:
-            polisher = LLMPolisher(
-                model_id=payload.model_id,
-                temperature=payload.temperature if payload.temperature is not None else 0.2,
-                top_p=payload.top_p if payload.top_p is not None else 0.9,
-                max_tokens=payload.max_tokens if payload.max_tokens is not None else 800,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        try:
-            polished_sentences = await asyncio.to_thread(
-                polisher.polish,
-                base_sentences,
-                style=payload.style or options.style,
-                extra_instructions=payload.extra_instructions,
-                parameters=payload.parameters,
-            )
-        except LLMPolishError as exc:
-            logger.exception("LLM 校正に失敗しました")
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        finally:
-            # 非キャッシュ or 明示解放要求時は早期に参照を外す
-            try:
-                polisher.close()
-            except Exception:
-                pass
-
-        # 環境変数で即時アンロードを選べるようにする（既定: 無効）
-        if os.getenv("LLM_POLISH_EAGER_UNLOAD", "0").lower() in {"1", "true", "on", "yes"}:
-            target_model_id = payload.model_id or os.getenv("LLM_POLISH_MODEL")
-            try:
-                removed = unload_llm_models(target_model_id)
-                logger.debug("llm_model_unloaded: model=%s removed=%d", target_model_id, removed)
-            except Exception:
-                logger.debug("llm_model_unload_failed", exc_info=True)
-
-        response_sentences = [PolishedSentencePayload(**sentence.model_dump()) for sentence in polished_sentences]
-        combined_text = "\n".join(sentence.text for sentence in polished_sentences).strip()
-
-        logger.debug("polish_llm_response: sentences=%d", len(response_sentences))
-
-        return PolishResponsePayload(
-            sentences=response_sentences,
-            text=combined_text,
-            sentence_count=len(response_sentences),
-        )
 
     return app
 app = create_app()
