@@ -21,6 +21,8 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
+from src.lib.corrector import CorrectionOptions, CorrectionResult
+from src.lib.corrector.integration import apply_corrections_to_results
 from src.lib.polish import PolishedSentence, PolishOptions, polish_text_from_segments
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 from src.lib.context import (
@@ -86,6 +88,29 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="書き起こし結果に校正を適用する",
     )
+    shared.add_argument(
+        "--corrector",
+        action="store_true",
+        help="文脈校正パイプラインを適用して差分パッチを生成する",
+    )
+    shared.add_argument(
+        "--corrector-aggressive-kuten",
+        dest="corrector_aggressive_kuten",
+        action="store_true",
+        help="末尾句点の簡易補完ルールを有効化する（既定）",
+    )
+    shared.add_argument(
+        "--no-corrector-aggressive-kuten",
+        dest="corrector_aggressive_kuten",
+        action="store_false",
+        help="末尾句点の簡易補完ルールを無効化する",
+    )
+    shared.add_argument(
+        "--corrector-normalize-numbers",
+        action="store_true",
+        help="数値表記の簡易正規化ルールを有効化する（MVPの占位オプション）",
+    )
+    shared.set_defaults(corrector_aggressive_kuten=True)
     shared.add_argument(
         "--plain-text",
         action="store_true",
@@ -349,6 +374,14 @@ def run_cli(
     polish_enabled = getattr(args, "polish", False)
     polish_options = PolishOptions() if polish_enabled else None
 
+    corrector_enabled = getattr(args, "corrector", False)
+    corrector_options = None
+    if corrector_enabled:
+        corrector_options = CorrectionOptions(
+            aggressive_kuten=getattr(args, "corrector_aggressive_kuten", True),
+            normalize_numbers=getattr(args, "corrector_normalize_numbers", False),
+        )
+
     args._stream_output = False  # type: ignore[attr-defined]
 
     if args.command == "stream":
@@ -360,6 +393,9 @@ def run_cli(
 
         if polish_enabled and interval > 0.0:
             logger.warning("polish オプション有効時は逐次出力を無効化します。最後にまとめて出力します。")
+            interval = 0.0
+        if corrector_enabled and interval > 0.0:
+            logger.warning("corrector オプション有効時は逐次出力を無効化します。最後にまとめて出力します。")
             interval = 0.0
 
         if interval > 0:
@@ -396,6 +432,13 @@ def run_cli(
             task=args.task,
             names=[args.name],
         )
+        if corrector_enabled:
+            results, correction_map = apply_corrections_to_results(
+                results,
+                language_hint=language,
+                options=corrector_options or CorrectionOptions(),
+            )
+            args._correction_results = correction_map  # type: ignore[attr-defined]
         if polish_enabled:
             updated, polished_map = _apply_polish(results, options=polish_options)
             args._polished_sentences = polished_map  # type: ignore[attr-defined]
@@ -420,6 +463,14 @@ def run_cli(
         task=args.task,
         transcribe_all_fn=transcribe_all_fn,
     )
+
+    if corrector_enabled:
+        results, correction_map = apply_corrections_to_results(
+            results,
+            language_hint=language,
+            options=corrector_options or CorrectionOptions(),
+        )
+        args._correction_results = correction_map  # type: ignore[attr-defined]
 
     if polish_enabled:
         results, polished_map = _apply_polish(results, options=polish_options)
@@ -733,6 +784,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     # 既存の出力（互換維持）
     plain_text = getattr(args, "plain_text", False)
     stream_output = getattr(args, "_stream_output", False)
+    correction_map: dict[str, CorrectionResult] = getattr(args, "_correction_results", {})  # type: ignore[assignment]
 
     for index, result in enumerate(results):  # type: ignore[assignment]
         if plain_text:
@@ -749,6 +801,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         diar_map = getattr(args, "_diarization_results", {})
         polished_map: dict[str, list[PolishedSentence]] = getattr(args, "_polished_sentences", {})  # type: ignore[assignment]
         polished_sentences = polished_map.get(result.filename)
+        correction = correction_map.get(result.filename)
         speaker_transcript = speaker_map.get(result.filename) if speaker_map else None
         diar_result = diar_map.get(result.filename) if diar_map else None
         if speaker_transcript:
@@ -758,6 +811,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         if not getattr(args, "_stream_output", False):
             label = "テキスト (校正済み)" if getattr(args, "polish", False) else "テキスト"
             print(f"{label}:\n", result.text)
+            if correction and correction.patches:
+                print("--- 校正パッチ ---")
+                for patch in correction.patches:
+                    tags = ", ".join(patch.tags) if patch.tags else "-"
+                    print(
+                        f"[{patch.span.start}, {patch.span.end}] -> {patch.replacement!r} "
+                        f"(tags={tags}, conf={patch.confidence:.2f})",
+                    )
         if args.show_segments:
             if speaker_transcript:
                 print("--- 話者付きセグメント ---")
