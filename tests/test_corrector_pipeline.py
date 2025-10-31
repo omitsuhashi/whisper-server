@@ -9,6 +9,8 @@ from src.lib.corrector import (
     CorrectionPipeline,
     CorrectionRequest,
     CorrectionSpan,
+    EditorConfig,
+    GlossaryEditor,
     apply_patches,
 )
 from src.lib.corrector.integration import apply_corrections_to_results
@@ -79,6 +81,17 @@ class TestCorrectorPipeline(unittest.TestCase):
 
         self.assertEqual(updated[0].text, "了解。")
         self.assertFalse(correction_map["sample.wav"].patches)
+
+    def test_pipeline_applies_editor_when_enabled(self) -> None:
+        editor = GlossaryEditor(EditorConfig(glossary={"かな": "仮名"}))
+        pipeline = CorrectionPipeline(editor=editor)
+        request = CorrectionRequest.from_raw(
+            "ひらがなかな",
+            options=CorrectionOptions(enable_editor=True),
+        )
+        result = pipeline.run(request)
+        self.assertEqual(result.corrected_text, "ひらがな仮名")
+        self.assertTrue(result.is_modified())
 
 
 if __name__ == "__main__":  # pragma: no cover

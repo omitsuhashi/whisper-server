@@ -28,6 +28,7 @@ class CorrectionSpan:
 class CorrectionOptions:
     aggressive_kuten: bool = False
     normalize_numbers: bool = False
+    enable_editor: bool = False
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object] | None) -> "CorrectionOptions":
@@ -36,18 +37,21 @@ class CorrectionOptions:
         return cls(
             aggressive_kuten=bool(data.get("aggressive_kuten", False)),
             normalize_numbers=bool(data.get("normalize_numbers", False)),
+            enable_editor=bool(data.get("enable_editor", False)),
         )
 
     def update(self, **overrides: object) -> "CorrectionOptions":
         return CorrectionOptions(
             aggressive_kuten=bool(overrides.get("aggressive_kuten", self.aggressive_kuten)),
             normalize_numbers=bool(overrides.get("normalize_numbers", self.normalize_numbers)),
+            enable_editor=bool(overrides.get("enable_editor", self.enable_editor)),
         )
 
     def as_dict(self) -> dict[str, bool]:
         return {
             "aggressive_kuten": self.aggressive_kuten,
             "normalize_numbers": self.normalize_numbers,
+            "enable_editor": self.enable_editor,
         }
 
 
