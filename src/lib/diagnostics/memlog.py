@@ -32,7 +32,19 @@ def _rss_bytes() -> int | None:
     try:
         import psutil  # type: ignore
 
-        return int(psutil.Process().memory_info().rss)
+        total = int(psutil.Process().memory_info().rss)
+        # 子プロセスも含めたい場合は環境変数で切り替え
+        if os.getenv("MEM_DIAG_INCLUDE_CHILDREN", "0").lower() in {"1", "true", "on", "yes"}:
+            try:
+                proc = psutil.Process()
+                for ch in proc.children(recursive=True):
+                    try:
+                        total += int(ch.memory_info().rss)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return total
     except Exception:
         try:
             import resource  # type: ignore
@@ -114,4 +126,3 @@ def snapshot(tag: str, **extra: Any) -> None:
 
 
 __all__ = ["snapshot", "ensure_tracemalloc"]
-

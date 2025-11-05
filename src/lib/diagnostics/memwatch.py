@@ -85,6 +85,7 @@ class MemoryWatchConfig:
     gc_on_warning: bool = False
     log_level: int = logging.INFO
     emit_debug_delta: bool = False
+    include_children: bool = False
 
     @classmethod
     def from_env(cls) -> "MemoryWatchConfig":
@@ -95,6 +96,7 @@ class MemoryWatchConfig:
         critical_mb = max(_env_float("MEM_WATCH_CRITICAL_MB", 0.0), 0.0)
         gc_on_warning = _env_flag("MEM_WATCH_GC", default=False)
         emit_debug_delta = _env_flag("MEM_WATCH_DEBUG_DELTA", default=False)
+        include_children = _env_flag("MEM_WATCH_INCLUDE_CHILDREN", default=False)
         level_value = _env_int("MEM_WATCH_LOG_LEVEL", logging.INFO)
 
         return cls(
@@ -106,6 +108,7 @@ class MemoryWatchConfig:
             gc_on_warning=gc_on_warning,
             log_level=level_value,
             emit_debug_delta=emit_debug_delta,
+            include_children=include_children,
         )
 
 
@@ -157,11 +160,32 @@ class MemoryWatchdog:
             logger.debug("memory_watchdog_sampler_unavailable")
             return
 
-        previous = self._last_value
-        self._last_value = rss
-        self._peak_value = max(self._peak_value, rss)
+        measured_rss = rss
+        rss_self = rss
+        rss_children = 0
 
-        delta = rss - previous if previous is not None else 0
+        # 子プロセスを合算したい場合は psutil で集計する（利用可能な時のみ）。
+        if self.config.include_children:
+            try:
+                import psutil  # type: ignore
+
+                proc = psutil.Process()
+                children = proc.children(recursive=True)
+                for ch in children:
+                    try:
+                        rss_children += int(ch.memory_info().rss)
+                    except Exception:
+                        pass
+                measured_rss = rss_self + rss_children
+            except Exception:
+                # psutil が無い/失敗時は自己 RSS のみ
+                measured_rss = rss
+
+        previous = self._last_value
+        self._last_value = measured_rss
+        self._peak_value = max(self._peak_value, measured_rss)
+
+        delta = measured_rss - previous if previous is not None else 0
         delta_text = _format_bytes(delta)
         now = time.time()
         uptime = now - self._started_at
@@ -169,8 +193,8 @@ class MemoryWatchdog:
         level = self.config.log_level
         message = "memory_usage"
         extra: dict[str, object] = {
-            "rss": rss,
-            "rss_h": _format_bytes(rss),
+            "rss": measured_rss,
+            "rss_h": _format_bytes(measured_rss),
             "delta": delta,
             "delta_h": delta_text,
             "peak": self._peak_value,
@@ -178,16 +202,26 @@ class MemoryWatchdog:
             "uptime_sec": int(uptime),
         }
 
-        if self.config.critical_threshold_bytes and rss >= self.config.critical_threshold_bytes:
+        if self.config.include_children:
+            extra.update(
+                {
+                    "rss_self": rss_self,
+                    "rss_self_h": _format_bytes(rss_self),
+                    "rss_children": rss_children,
+                    "rss_children_h": _format_bytes(rss_children),
+                }
+            )
+
+        if self.config.critical_threshold_bytes and measured_rss >= self.config.critical_threshold_bytes:
             level = logging.ERROR
             message = "memory_usage_critical"
-        elif self.config.warn_threshold_bytes and rss >= self.config.warn_threshold_bytes:
+        elif self.config.warn_threshold_bytes and measured_rss >= self.config.warn_threshold_bytes:
             level = logging.WARNING
             message = "memory_usage_warning"
 
         if level >= logging.WARNING and self.config.gc_on_warning:
             collected = gc.collect()
-            post_gc = self._sampler() or rss
+            post_gc = self._sampler() or measured_rss
             extra.update({
                 "gc_collected": collected,
                 "rss_after_gc": post_gc,
@@ -197,7 +231,19 @@ class MemoryWatchdog:
         if level >= logging.WARNING or self.config.emit_debug_delta:
             logger.log(level, "%s: %s", message, extra)
         else:
-            logger.log(level, "%s: rss=%s delta=%s peak=%s", message, extra["rss_h"], delta_text, extra["peak_h"])
+            if self.config.include_children:
+                logger.log(
+                    level,
+                    "%s: rss=%s (self=%s children=%s) delta=%s peak=%s",
+                    message,
+                    extra["rss_h"],
+                    extra.get("rss_self_h", "0B"),
+                    extra.get("rss_children_h", "0B"),
+                    delta_text,
+                    extra["peak_h"],
+                )
+            else:
+                logger.log(level, "%s: rss=%s delta=%s peak=%s", message, extra["rss_h"], delta_text, extra["peak_h"])
 
 
 _WATCHDOG: MemoryWatchdog | None = None
@@ -226,4 +272,3 @@ def ensure_memory_watchdog() -> MemoryWatchdog | None:
 
 
 __all__ = ["MemoryWatchConfig", "MemoryWatchdog", "ensure_memory_watchdog"]
-
