@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, TYPE_CHECKING
+from typing import Any, Iterable, List, Sequence, TYPE_CHECKING, cast
 
 # 直接スクリプトとして実行された場合でも src パッケージを解決できるようにする
 if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対応
@@ -29,12 +30,15 @@ from src.lib.context import (
     integrate_meeting_data,
     render_mermaid_mindmap,
 )
+from src.lib.youtube import YouTubeDescriptionFetcher
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.lib.asr import TranscriptionResult
     from src.lib.diarize import DiarizationResult, SpeakerAnnotatedTranscript
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
+YOUTUBE_DEFAULT_OUTPUT = "youtube_descriptions.json"
+YOUTUBE_ENV_API_KEY = "YOUTUBE_API_KEY"
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,11 @@ class SavedFrameInfo:
 class FrameExtractionResult:
     video: Path
     frames: List[SavedFrameInfo]
+
+
+@dataclass(frozen=True)
+class YouTubeFetchResult:
+    output_path: Path
 
 
 def _read_stream(buffer: Iterable[bytes]) -> Iterable[bytes]:
@@ -226,6 +235,52 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
     )
 
+    youtube_parser = subparsers.add_parser(
+        "youtube-fetch-descriptions",
+        help="YouTube チャンネルの動画タイトル/説明文を JSON に保存する",
+    )
+    youtube_parser.add_argument(
+        "--api-key",
+        "-k",
+        dest="youtube_api_key",
+        help=f"YouTube Data API キー。未指定時は環境変数 ${YOUTUBE_ENV_API_KEY} を参照します。",
+    )
+    youtube_parser.add_argument(
+        "--handle",
+        dest="youtube_handle",
+        help="チャンネルの @ハンドル。先頭の @ はあってもなくても構いません。",
+    )
+    youtube_parser.add_argument(
+        "--channel-id",
+        dest="youtube_channel_id",
+        help="チャンネル ID。指定した場合はハンドルのルックアップをスキップします。",
+    )
+    youtube_parser.add_argument(
+        "--output",
+        "-o",
+        dest="youtube_output",
+        default=YOUTUBE_DEFAULT_OUTPUT,
+        help=f"書き出す JSON パス（既定: {YOUTUBE_DEFAULT_OUTPUT}）。",
+    )
+    youtube_parser.add_argument(
+        "--ensure-ascii",
+        dest="youtube_ensure_ascii",
+        action="store_true",
+        help="出力 JSON の非 ASCII 文字を全てエスケープします。",
+    )
+    youtube_parser.add_argument(
+        "--pause",
+        dest="youtube_pause",
+        type=float,
+        default=0.1,
+        help="API 呼び出し間のスリープ秒数（既定: 0.1）。",
+    )
+    youtube_parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
+    )
+
     diarize_parser = subparsers.add_parser(
         "diarize",
         help="音声ファイルに話者分離のみを実行する",
@@ -279,7 +334,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     subparsers.required = False
     parser.set_defaults(command="files")
 
-    if argv and argv[0] not in {"files", "stream", "frames", "diarize"}:
+    if argv and argv[0] not in {"files", "stream", "frames", "diarize", "youtube-fetch-descriptions"}:
         argv = ["files", *argv]
 
     return parser.parse_args(argv)
@@ -287,11 +342,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def run_cli(
     args: argparse.Namespace,
-) -> list["TranscriptionResult"] | list[FrameExtractionResult] | list["DiarizationResult"]:
+) -> (
+    list["TranscriptionResult"]
+    | list[FrameExtractionResult]
+    | list["DiarizationResult"]
+    | YouTubeFetchResult
+):
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
     setup_logging(args.log_level)
     ensure_memory_watchdog()
+
+    if args.command == "youtube-fetch-descriptions":
+        return _run_youtube_fetch(args)
 
     if args.command == "frames":
         return _extract_frames(args)
@@ -429,6 +492,30 @@ def _load_asr_components():
     from src.lib.asr import TranscriptionResult, transcribe_all, transcribe_all_bytes
 
     return TranscriptionResult, transcribe_all, transcribe_all_bytes
+
+
+def _run_youtube_fetch(args: argparse.Namespace) -> YouTubeFetchResult:
+    api_key = getattr(args, "youtube_api_key", None) or os.getenv(YOUTUBE_ENV_API_KEY)
+    if not api_key:
+        raise RuntimeError(
+            f"YouTube Data API キーを --api-key もしくは環境変数 {YOUTUBE_ENV_API_KEY} で指定してください。",
+        )
+    handle = getattr(args, "youtube_handle", None)
+    channel_id = getattr(args, "youtube_channel_id", None)
+    if not (handle or channel_id):
+        raise RuntimeError("--handle もしくは --channel-id のいずれかを指定してください。")
+    ensure_ascii = bool(getattr(args, "youtube_ensure_ascii", False))
+    pause = max(float(getattr(args, "youtube_pause", 0.1)), 0.0)
+    output = Path(getattr(args, "youtube_output"))
+
+    fetcher = YouTubeDescriptionFetcher(api_key=api_key, pause_seconds=pause)
+    output_path = fetcher.fetch_and_save(
+        output_path=output,
+        handle=handle,
+        channel_id=channel_id,
+        ensure_ascii=ensure_ascii,
+    )
+    return YouTubeFetchResult(output_path=output_path)
 
 
 def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
@@ -595,6 +682,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit(f"話者分離に失敗しました: {exc}") from exc
         raise SystemExit(f"書き起こしに失敗しました: {exc}") from exc
 
+    if args.command == "youtube-fetch-descriptions":
+        yt_result = cast(YouTubeFetchResult, results)
+        print(f"YouTube の説明文を書き出しました: {yt_result.output_path}")
+        return
     if args.command == "frames":
         for extraction in results:  # type: ignore[assignment]
             print("=== 動画:", extraction.video)
