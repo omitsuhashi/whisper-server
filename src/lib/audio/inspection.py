@@ -18,6 +18,26 @@ from .utils import AudioDecodeError, decode_audio_bytes
 logger = logging.getLogger(__name__)
 
 
+_SILENCE_CACHE: dict[Path, bool] = {}
+
+
+def _resolve_cache_key(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _get_cached_silence(path: Path) -> Optional[bool]:
+    key = _resolve_cache_key(path)
+    return _SILENCE_CACHE.get(key)
+
+
+def _set_cached_silence(path: Path, silent: bool) -> None:
+    key = _resolve_cache_key(path)
+    _SILENCE_CACHE[key] = silent
+
+
 @dataclass(slots=True)
 class PreparedAudio:
     path: Path
@@ -88,12 +108,18 @@ def validate_audio_file(path: Path, original_name: Optional[str]) -> None:
 
 
 def is_silent_audio(path: Path, *, threshold: float = 5e-4) -> bool:
+    cached = _get_cached_silence(path)
+    if cached is not None:
+        return cached
+
     try:
         waveform = _decode_audio_bytes(path)
     except InvalidAudioError:
+        _set_cached_silence(path, False)
         return False
 
     if waveform.size == 0:
+        _set_cached_silence(path, True)
         return True
 
     energy = float(np.mean(np.abs(waveform)))
@@ -104,7 +130,9 @@ def is_silent_audio(path: Path, *, threshold: float = 5e-4) -> bool:
         energy,
         peak,
     )
-    return energy < threshold and peak < threshold * 5
+    silent = energy < threshold and peak < threshold * 5
+    _set_cached_silence(path, silent)
+    return silent
 
 
 def dump_audio_for_debug(path: Path, original_name: Optional[str]) -> Optional[Path]:

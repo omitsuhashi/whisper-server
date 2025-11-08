@@ -23,6 +23,7 @@ from src.lib.audio import (
 )
 from src.lib.corrector import CorrectionError, run_correction
 from src.lib.diagnostics.memwatch import ensure_memory_watchdog
+from src.lib.asr.subproc import transcribe_paths_via_worker
 from src.cmd.schemas.corrector import (
     CorrectionRequestPayload,
     CorrectionResponsePayload,
@@ -173,30 +174,15 @@ def create_app() -> FastAPI:
 
             transcribe_all_fn = None
 
-            if _os.getenv("ASR_HTTP_SUBPROCESS", "0").lower() in {"1", "true", "on", "yes"}:
-                from src.lib.asr.subproc import transcribe_bytes_subprocess as _subproc
+            if _os.getenv("ASR_HTTP_SUBPROCESS", "1").lower() in {"1", "true", "on", "yes"}:
 
                 def _transcribe_subprocess(paths, *, model_name, language, task):
-                    results: list[TranscriptionResult] = []
-                    for path_like in paths:
-                        path_obj = Path(path_like)
-                        data = path_obj.read_bytes()
-                        res = _subproc(
-                            data,
-                            model_name=model_name,
-                            language=language,
-                            task=task,
-                            name=path_obj.name,
-                        )
-                        if not res:
-                            continue
-                        first = res[0]
-                        if hasattr(first, "model_copy"):
-                            first = first.model_copy(update={"filename": path_obj.name})
-                        else:
-                            setattr(first, "filename", path_obj.name)
-                        results.append(first)
-                    return results
+                    return transcribe_paths_via_worker(
+                        paths,
+                        model_name=model_name,
+                        language=language,
+                        task=task,
+                    )
 
                 transcribe_all_fn = _transcribe_subprocess
             elif effective_chunk > 0:

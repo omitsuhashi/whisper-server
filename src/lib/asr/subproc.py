@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import multiprocessing as mp
+import os
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Iterable
+
+from src.lib.asr.models import TranscriptionResult
+
+_IDLE_TIMEOUT = max(float(os.getenv("ASR_SUBPROC_IDLE_SECONDS", "600") or 0.0), 0.0)
+_REQUEST_TIMEOUT = max(float(os.getenv("ASR_SUBPROC_REQUEST_TIMEOUT", "300") or 0.0), 0.0) or None
+_TEST_MODE = os.getenv("ASR_SUBPROC_TEST_MODE", "0").lower() in {"1", "true", "on", "yes"}
+
+_WORKER_LOCK = threading.Lock()
+_WORKER_HANDLE: "_WorkerHandle | None" = None
+_SHUTDOWN_TIMER: threading.Timer | None = None
+
+
+class _WorkerHandle:
+    def __init__(self) -> None:
+        ctx = mp.get_context("spawn")
+        parent_conn, child_conn = ctx.Pipe()
+        self._conn = parent_conn
+        self._process = ctx.Process(target=_worker_entrypoint, args=(child_conn,), daemon=True)
+        self._process.start()
+        child_conn.close()
+
+    @property
+    def pid(self) -> int | None:
+        return self._process.pid if self._process.is_alive() else None
+
+    def request(self, payload: dict, timeout: float | None) -> dict:
+        self._conn.send(payload)
+        if timeout is not None:
+            if not self._conn.poll(timeout):
+                raise TimeoutError("ASR worker response timed out")
+            return self._conn.recv()
+        return self._conn.recv()
+
+    def is_alive(self) -> bool:
+        return self._process.is_alive()
+
+    def shutdown(self) -> None:
+        try:
+            self._conn.send({"cmd": "shutdown"})
+        except Exception:
+            pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        self._process.join(timeout=1.0)
+        if self._process.is_alive():
+            self._process.kill()
+
+
+def _worker_entrypoint(conn: mp.connection.Connection) -> None:
+    while True:
+        try:
+            message = conn.recv()
+        except EOFError:
+            break
+        command = message.get("cmd")
+        if command == "shutdown":
+            break
+        if command != "transcribe_paths":
+            conn.send({"ok": False, "error": f"unknown_command:{command}"})
+            continue
+        try:
+            payload = _handle_transcribe(message)
+            conn.send({"ok": True, "results": payload})
+        except Exception as exc:  # pragma: no cover - 例外は親側で扱う
+            conn.send({"ok": False, "error": str(exc), "traceback": traceback.format_exc()})
+    conn.close()
+
+
+def _handle_transcribe(message: dict) -> list[dict]:
+    paths = [Path(p) for p in message.get("paths") or []]
+    model_name = message.get("model_name")
+    language = message.get("language")
+    task = message.get("task")
+
+    if _TEST_MODE:
+        return [
+            {
+                "filename": path.name,
+                "text": f"{path.name}:{os.getpid()}",
+                "language": language,
+                "duration": 0.0,
+                "segments": [],
+            }
+            for path in paths
+        ]
+
+    from src.lib.asr.options import TranscribeOptions  # noqa: WPS433 - worker内のみで import
+    from src.lib.asr.pipeline import transcribe_paths  # noqa: WPS433
+
+    options = TranscribeOptions(model_name=model_name, language=language, task=task, decode_options={})
+    results = transcribe_paths(paths, options=options)
+    return [res.model_dump() for res in results]
+
+
+def _ensure_worker() -> _WorkerHandle:
+    global _WORKER_HANDLE
+    with _WORKER_LOCK:
+        if _WORKER_HANDLE is None or not _WORKER_HANDLE.is_alive():
+            _shutdown_worker_locked()
+            _WORKER_HANDLE = _WorkerHandle()
+        return _WORKER_HANDLE
+
+
+def _shutdown_worker_locked() -> None:
+    global _WORKER_HANDLE
+    global _SHUTDOWN_TIMER
+    if _SHUTDOWN_TIMER is not None:
+        _SHUTDOWN_TIMER.cancel()
+        _SHUTDOWN_TIMER = None
+    if _WORKER_HANDLE is not None:
+        try:
+            _WORKER_HANDLE.shutdown()
+        except Exception:
+            pass
+        _WORKER_HANDLE = None
+
+
+def _schedule_idle_shutdown() -> None:
+    if _IDLE_TIMEOUT <= 0:
+        return
+
+    def _timeout_shutdown() -> None:
+        with _WORKER_LOCK:
+            _shutdown_worker_locked()
+
+    global _SHUTDOWN_TIMER
+    if _SHUTDOWN_TIMER is not None:
+        _SHUTDOWN_TIMER.cancel()
+    timer = threading.Timer(_IDLE_TIMEOUT, _timeout_shutdown)
+    timer.daemon = True
+    _SHUTDOWN_TIMER = timer
+    timer.start()
+
+
+def transcribe_paths_via_worker(
+    audio_paths: Iterable[str | Path],
+    *,
+    model_name: str,
+    language: str | None,
+    task: str | None,
+) -> list[TranscriptionResult]:
+    payload = {
+        "cmd": "transcribe_paths",
+        "paths": [str(Path(p)) for p in audio_paths],
+        "model_name": model_name,
+        "language": language,
+        "task": task,
+    }
+    attempts = 0
+    while attempts < 2:
+        worker = _ensure_worker()
+        try:
+            response = worker.request(payload, timeout=_REQUEST_TIMEOUT)
+        except (TimeoutError, BrokenPipeError, EOFError, OSError):
+            attempts += 1
+            with _WORKER_LOCK:
+                _shutdown_worker_locked()
+            if attempts >= 2:
+                raise
+            time.sleep(0.1)
+            continue
+
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error") or "ASR worker error")
+
+        _schedule_idle_shutdown()
+        return [TranscriptionResult.model_validate(entry) for entry in response.get("results") or []]
+
+    raise RuntimeError("ASR worker unavailable")
+
+
+__all__ = ["transcribe_paths_via_worker"]
