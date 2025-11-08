@@ -7,7 +7,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from src.lib.asr.models import TranscriptionResult
 
@@ -86,6 +86,7 @@ def _handle_transcribe(message: dict) -> list[dict]:
     model_name = message.get("model_name")
     language = message.get("language")
     task = message.get("task")
+    decode_options = message.get("decode_options") or {}
 
     if _TEST_MODE:
         return [
@@ -102,7 +103,12 @@ def _handle_transcribe(message: dict) -> list[dict]:
     from src.lib.asr.options import TranscribeOptions  # noqa: WPS433 - worker内のみで import
     from src.lib.asr.pipeline import transcribe_paths  # noqa: WPS433
 
-    options = TranscribeOptions(model_name=model_name, language=language, task=task, decode_options={})
+    options = TranscribeOptions(
+        model_name=model_name,
+        language=language,
+        task=task,
+        decode_options=dict(decode_options),
+    )
     results = transcribe_paths(paths, options=options)
     return [res.model_dump() for res in results]
 
@@ -155,6 +161,7 @@ def transcribe_paths_via_worker(
     model_name: str,
     language: str | None,
     task: str | None,
+    **decode_options: Any,
 ) -> list[TranscriptionResult]:
     payload = {
         "cmd": "transcribe_paths",
@@ -162,6 +169,7 @@ def transcribe_paths_via_worker(
         "model_name": model_name,
         "language": language,
         "task": task,
+        "decode_options": dict(decode_options or {}),
     }
     attempts = 0
     while attempts < 2:

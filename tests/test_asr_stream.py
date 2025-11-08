@@ -302,13 +302,29 @@ class HttpRestTests(unittest.TestCase):
         if shutil.which("ffmpeg") is None:
             self.skipTest("ffmpeg が見つかりません")
 
+    @mock.patch("src.cmd.http.transcribe_paths_via_worker")
     @mock.patch("src.cmd.http.transcribe_prepared_audios")
-    def test_transcribe_endpoint_handles_multiple_files(self, mock_transcribe_prepared: mock.Mock) -> None:
+    def test_transcribe_endpoint_handles_multiple_files(
+        self,
+        mock_transcribe_prepared: mock.Mock,
+        mock_transcribe_worker: mock.Mock,
+    ) -> None:
         texts = iter(["hello", "こんにちは"])
+        mock_transcribe_worker.return_value = []
 
         def fake_transcribe(prepared, **kwargs):
             entries = list(prepared)
             results = []
+            transcribe_all_fn = kwargs.get("transcribe_all_fn")
+            decode_options = kwargs.get("decode_options")
+            if transcribe_all_fn is not None:
+                transcribe_all_fn(
+                    [],
+                    model_name=kwargs.get("model_name"),
+                    language=kwargs.get("language"),
+                    task=kwargs.get("task"),
+                    **(decode_options or {}),
+                )
             for entry in entries:
                 text = next(texts)
                 results.append(
@@ -332,7 +348,11 @@ class HttpRestTests(unittest.TestCase):
         response = client.post(
             "/transcribe",
             files=files,
-            data={"model": "fake-model", "language": "ja"},
+            data={
+                "model": "fake-model",
+                "language": "ja",
+                "prompt_agenda": "品質レビュー",
+            },
         )
 
         self.assertEqual(response.status_code, 200)
@@ -347,13 +367,31 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(len(list(args[0])), 2)
         self.assertEqual(kwargs["model_name"], "fake-model")
         self.assertEqual(kwargs["language"], "ja")
+        self.assertIsNotNone(kwargs.get("decode_options"))
+        self.assertIn("議題: 品質レビュー", kwargs["decode_options"]["initial_prompt"])
 
+    @mock.patch("src.cmd.http.transcribe_paths_via_worker")
     @mock.patch("src.cmd.http.transcribe_prepared_audios")
-    def test_transcribe_endpoint_skips_silent_audio(self, mock_transcribe_prepared: mock.Mock) -> None:
+    def test_transcribe_endpoint_skips_silent_audio(
+        self,
+        mock_transcribe_prepared: mock.Mock,
+        mock_transcribe_worker: mock.Mock,
+    ) -> None:
         speech_result = TranscriptionResult(filename="speech.wav", text="ありがとう")
+        mock_transcribe_worker.return_value = []
         def fake_transcribe(prepared, **kwargs):
             entries = list(prepared)
             results = []
+            transcribe_all_fn = kwargs.get("transcribe_all_fn")
+            decode_options = kwargs.get("decode_options")
+            if transcribe_all_fn is not None:
+                transcribe_all_fn(
+                    [],
+                    model_name=kwargs.get("model_name"),
+                    language=kwargs.get("language"),
+                    task=kwargs.get("task"),
+                    **(decode_options or {}),
+                )
             for entry in entries:
                 if entry.silent:
                     results.append(
@@ -394,6 +432,7 @@ class HttpRestTests(unittest.TestCase):
         args, kwargs = mock_transcribe_prepared.call_args
         self.assertEqual(len(list(args[0])), 2)
         self.assertEqual(kwargs["language"], "ja")
+        self.assertIsNone(kwargs.get("decode_options"))
 
 
 if __name__ == "__main__":  # pragma: no cover

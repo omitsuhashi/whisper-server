@@ -73,6 +73,18 @@ class ASRSubprocessTests(unittest.TestCase):
 
         self.assertNotEqual(pid1, pid2)
 
+    def test_decode_options_forwarded(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+            result = self.module.transcribe_paths_via_worker(
+                [tmp.name],
+                model_name="dummy",
+                language="ja",
+                task=None,
+                initial_prompt="foo",
+            )
+
+        self.assertEqual(len(result), 1)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

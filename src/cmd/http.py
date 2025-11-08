@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
@@ -14,6 +14,7 @@ from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.asr.chunking import transcribe_paths_chunked
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
+from src.lib.asr.prompting import build_prompt_from_metadata
 from src.lib.audio import (
     InvalidAudioError,
     PreparedAudio,
@@ -48,6 +49,10 @@ def create_app() -> FastAPI:
         task: Optional[str] = Form(None),
         chunk_seconds: Optional[float] = Form(None),
         overlap_seconds: Optional[float] = Form(None),
+        prompt_agenda: Optional[str] = Form(None),
+        prompt_participants: Optional[str] = Form(None),
+        prompt_products: Optional[str] = Form(None),
+        prompt_style: Optional[str] = Form(None),
     ) -> list[TranscriptionResult]:
         """アップロードされた音声群を書き起こして返す。"""
 
@@ -88,6 +93,16 @@ def create_app() -> FastAPI:
                 default_language=DEFAULT_LANGUAGE,
             )
 
+            decode_options: dict[str, Any] = {}
+            prompt_value = build_prompt_from_metadata(
+                agenda=prompt_agenda,
+                participants=prompt_participants,
+                products=prompt_products,
+                style=prompt_style,
+            )
+            if prompt_value:
+                decode_options["initial_prompt"] = prompt_value
+
             # チャンクとオーバーラップ秒の解決: フォーム値 > 環境変数 > 既定
             import os as _os
 
@@ -122,18 +137,19 @@ def create_app() -> FastAPI:
 
             if _os.getenv("ASR_HTTP_SUBPROCESS", "1").lower() in {"1", "true", "on", "yes"}:
 
-                def _transcribe_subprocess(paths, *, model_name, language, task):
+                def _transcribe_subprocess(paths, *, model_name, language, task, **decode_kwargs):
                     return transcribe_paths_via_worker(
                         paths,
                         model_name=model_name,
                         language=language,
                         task=task,
+                        **decode_kwargs,
                     )
 
                 transcribe_all_fn = _transcribe_subprocess
             elif effective_chunk > 0:
 
-                def _transcribe_chunked(paths, *, model_name, language, task):
+                def _transcribe_chunked(paths, *, model_name, language, task, **decode_kwargs):
                     return transcribe_paths_chunked(
                         paths,
                         model_name=model_name,
@@ -141,6 +157,7 @@ def create_app() -> FastAPI:
                         task=task,
                         chunk_seconds=float(effective_chunk),
                         overlap_seconds=float(effective_overlap),
+                        **decode_kwargs,
                     )
 
                 transcribe_all_fn = _transcribe_chunked
@@ -152,6 +169,7 @@ def create_app() -> FastAPI:
                 language=language_resolved,
                 task=task,
                 transcribe_all_fn=transcribe_all_fn,
+                decode_options=decode_options or None,
             )
 
         except (FileNotFoundError, InvalidAudioError) as exc:

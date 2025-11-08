@@ -126,9 +126,27 @@ def _transcribe_single(
 ) -> TranscriptionResult:
     """transcribeを呼び出しTranscriptionResultへ変換する。"""
 
+    effective_kwargs = dict(transcribe_kwargs or {})
+    if "condition_on_previous_text" not in effective_kwargs:
+        effective_kwargs["condition_on_previous_text"] = True
+
     _memsnap("asr_pre_transcribe", extra={"model": model_name, "input_type": type(audio_input).__name__})
-    raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **transcribe_kwargs)
+    raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **effective_kwargs)
     _memsnap("asr_post_transcribe", extra={"segments": len(raw_result.get("segments") or [])})
+
+    if effective_kwargs.get("condition_on_previous_text", True) and _should_retry_without_condition(raw_result):
+        fallback_kwargs = dict(effective_kwargs)
+        fallback_kwargs["condition_on_previous_text"] = False
+        logger.warning("condition_retry_without_previous_text: %s", display_name)
+        raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **fallback_kwargs)
+        _memsnap(
+            "asr_post_transcribe_retry",
+            extra={
+                "segments": len(raw_result.get("segments") or []),
+                "condition_on_previous_text": False,
+            },
+        )
+
     if _should_force_silence(raw_result):
         logger.info("silence_by_model: %s", display_name)
         return _build_silence_result(
@@ -192,6 +210,58 @@ def _should_force_silence(raw_result: dict[str, Any]) -> bool:
     avg_score = sum(scores) / len(scores)
     # Whisper の閾値は環境によって感度が高く出ることがあるため、より広い音量帯を許容するように上げておく。
     return max_score >= 0.85 or avg_score >= 0.75
+
+
+def _should_retry_without_condition(raw_result: dict[str, Any]) -> bool:
+    text = (raw_result.get("text") or "").strip()
+    segments = raw_result.get("segments") or []
+    if _has_repeated_tail(text):
+        return True
+    return _has_repeated_segments(segments)
+
+
+def _has_repeated_tail(text: str, *, min_chunk: int = 6, max_chunk: int = 30) -> bool:
+    if not text:
+        return False
+    normalized = text.replace("\n", "").replace("\r", "").replace(" ", "")
+    if len(normalized) < min_chunk * 3:
+        return False
+    tail = normalized[-max_chunk * 3 :]
+    max_size = min(max_chunk, len(tail) // 3)
+    for size in range(min_chunk, max_size + 1):
+        if len(tail) < size * 3:
+            break
+        last = tail[-size:]
+        mid = tail[-2 * size : -size]
+        prev = tail[-3 * size : -2 * size]
+        if last and last == mid == prev:
+            return True
+    return False
+
+
+def _has_repeated_segments(segments: Sequence[Any], *, min_repeats: int = 3) -> bool:
+    texts: list[str] = []
+    for segment in segments:
+        if isinstance(segment, dict):
+            content = (segment.get("text") or "").strip()
+        elif hasattr(segment, "text"):
+            content = str(getattr(segment, "text", "") or "").strip()
+        else:
+            content = ""
+        if content:
+            texts.append(content)
+    if len(texts) < min_repeats:
+        return False
+    repeat = 1
+    for idx in range(1, len(texts)):
+        if texts[idx] == texts[idx - 1]:
+            repeat += 1
+            if repeat >= min_repeats:
+                return True
+        else:
+            repeat = 1
+    unique_ratio = len(set(texts)) / len(texts) if texts else 1.0
+    return unique_ratio < 0.5 and len(texts) >= 6
 
 
 __all__ = [

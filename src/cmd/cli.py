@@ -22,6 +22,7 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.audio import InvalidAudioError, PreparedAudio, prepare_audio
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
+from src.lib.asr.prompting import build_prompt_from_metadata
 from src.lib.diagnostics.memwatch import ensure_memory_watchdog
 from src.lib.video import FrameSamplingError, SampledFrame, sample_key_frames
 from src.lib.context import (
@@ -109,7 +110,39 @@ def _build_shared_parent_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="メタ情報を省きテキストのみ標準出力へ表示する",
     )
+    parser.add_argument(
+        "--prompt-agenda",
+        default=None,
+        help="initial_prompt 用の議題（カンマ区切り）",
+    )
+    parser.add_argument(
+        "--prompt-participants",
+        default=None,
+        help="initial_prompt 用の参加者名（カンマ区切り）",
+    )
+    parser.add_argument(
+        "--prompt-products",
+        default=None,
+        help="initial_prompt 用の製品名・ドメイン用語（カンマ区切り）",
+    )
+    parser.add_argument(
+        "--prompt-style",
+        default=None,
+        help="initial_prompt へ追加するスタイル指示（未指定時は既定文）",
+    )
     return parser
+
+
+def _build_decode_options(args: argparse.Namespace) -> dict[str, Any] | None:
+    prompt = build_prompt_from_metadata(
+        agenda=getattr(args, "prompt_agenda", None),
+        participants=getattr(args, "prompt_participants", None),
+        products=getattr(args, "prompt_products", None),
+        style=getattr(args, "prompt_style", None),
+    )
+    if not prompt:
+        return None
+    return {"initial_prompt": prompt}
 
 
 def _configure_files_parser(parser: argparse.ArgumentParser) -> None:
@@ -338,6 +371,7 @@ def _prepare_asr_runtime(
     args: argparse.Namespace,
 ) -> tuple[str, str | None, Any, Any]:
     args._stream_output = False  # type: ignore[attr-defined]
+    args._decode_options = _build_decode_options(args)  # type: ignore[attr-defined]
     _, transcribe_all_fn, transcribe_all_bytes_fn = _load_asr_components()
     model_name, language = resolve_model_and_language(
         args.model,
@@ -350,6 +384,7 @@ def _prepare_asr_runtime(
 
 def _handle_stream_command(args: argparse.Namespace) -> CommandResult:
     model_name, language, _, transcribe_all_bytes_fn = _prepare_asr_runtime(args)
+    decode_options = dict(getattr(args, "_decode_options", {}) or {})
     if sys.stdin.buffer.isatty():
         raise ValueError("ストリームモードでは標準入力へ音声データをパイプしてください。")
 
@@ -366,6 +401,7 @@ def _handle_stream_command(args: argparse.Namespace) -> CommandResult:
             chunk_size=chunk_size,
             interval=interval,
             transcribe_all_bytes_fn=transcribe_all_bytes_fn,
+            decode_options=decode_options,
             emit_stdout=True,
         )
 
@@ -389,6 +425,7 @@ def _handle_stream_command(args: argparse.Namespace) -> CommandResult:
         language=language,
         task=args.task,
         names=[args.name],
+        **decode_options,
     )
 
 
@@ -412,6 +449,7 @@ def _handle_files_command(args: argparse.Namespace) -> CommandResult:
         language=language,
         task=args.task,
         transcribe_all_fn=transcribe_all_fn,
+        decode_options=getattr(args, "_decode_options", None),
     )
 
     if getattr(args, "diarize", False):
@@ -699,6 +737,7 @@ def _streaming_transcription(
     chunk_size: int,
     interval: float,
     transcribe_all_bytes_fn,
+    decode_options: dict[str, Any] | None = None,
     emit_stdout: bool = False,
 ) -> list["TranscriptionResult"]:
     """標準入力からのストリームを一定間隔で書き起こして標準出力へ追記する。"""
@@ -722,6 +761,7 @@ def _streaming_transcription(
             language=language,
             task=task,
             names=[name],
+            **(decode_options or {}),
         )
         if not current_results:
             return

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from src.lib.audio import PreparedAudio
 
@@ -27,10 +27,12 @@ def transcribe_prepared_audios(
     language: str,
     task: Optional[str] = None,
     transcribe_all_fn: Optional[TranscribeAllFn] = None,
+    decode_options: Optional[dict[str, Any]] = None,
 ) -> list[TranscriptionResult]:
     entries = list(prepared)
     non_silent = [str(entry.path) for entry in entries if not entry.silent]
     results: list[TranscriptionResult] = []
+    decode_kwargs = dict(decode_options or {})
     if non_silent:
         if transcribe_all_fn is None:
             from src.lib import asr as asr_module  # local import for patchability
@@ -41,6 +43,7 @@ def transcribe_prepared_audios(
             model_name=model_name,
             language=language,
             task=task,
+            **decode_kwargs,
         )
 
     result_iter = iter(results)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -12,10 +12,7 @@ from .main import transcribe_all_bytes as _default_transcribe_all_bytes
 # Whisper の標準サンプルレート（16kHz）
 _SR = 16000
 
-TranscribeBytesFn = Callable[
-    [Iterable[bytes | bytearray | memoryview], str, Optional[str], Optional[str], Optional[Sequence[str]]],
-    List[TranscriptionResult],
-]
+TranscribeBytesFn = Callable[..., List[TranscriptionResult]]
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[Tuple[int, int, int, int]]:
@@ -123,10 +120,12 @@ def transcribe_paths_chunked(
     chunk_seconds: float = 25.0,
     overlap_seconds: float = 1.0,
     transcribe_all_bytes_fn: Optional[TranscribeBytesFn] = None,
+    **decode_options: Any,
 ) -> List[TranscriptionResult]:
     """ファイル入力をチャンク化し、オーバーラップを除去しながら結合する。"""
 
     fn = transcribe_all_bytes_fn or _default_transcribe_all_bytes
+    decode_kwargs = dict(decode_options or {})
     results: List[TranscriptionResult] = []
 
     chunk_seconds = max(float(chunk_seconds or 0.0), 0.0)
@@ -141,7 +140,14 @@ def transcribe_paths_chunked(
         total = int(waveform.shape[-1])
 
         if chunk_seconds <= 0.0 or total <= int(_SR * chunk_seconds):
-            partials = fn([raw], model_name=model_name, language=language, task=task, names=[path.name])
+            partials = fn(
+                [raw],
+                model_name=model_name,
+                language=language,
+                task=task,
+                names=[path.name],
+                **decode_kwargs,
+            )
             if partials:
                 res = partials[0]
                 if hasattr(res, "model_copy"):
@@ -161,7 +167,14 @@ def transcribe_paths_chunked(
             blobs.append(encode_waveform_to_wav_bytes(chunk_wave, sample_rate=_SR))
 
         chunk_names = [f"{path.name}#chunk{idx+1}" for idx in range(len(chunk_windows))]
-        partials = fn(blobs, model_name=model_name, language=language, task=task, names=chunk_names)
+        partials = fn(
+            blobs,
+            model_name=model_name,
+            language=language,
+            task=task,
+            names=chunk_names,
+            **decode_kwargs,
+        )
         merged = _merge_results(partials, chunk_windows=chunk_windows, filename=path.name, language=language)
         results.append(merged)
 
