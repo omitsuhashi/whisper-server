@@ -21,15 +21,8 @@ from src.lib.audio import (
     infer_suffix,
     prepare_audio,
 )
-from src.lib.corrector import CorrectionError, run_correction
 from src.lib.diagnostics.memwatch import ensure_memory_watchdog
 from src.lib.asr.subproc import transcribe_paths_via_worker
-from src.cmd.schemas.corrector import (
-    CorrectionRequestPayload,
-    CorrectionResponsePayload,
-    CorrectionPatchPayload,
-    build_correction_options,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -46,53 +39,6 @@ def create_app() -> FastAPI:
         """死活監視用エンドポイント。"""
 
         return {"status": "ok"}
-
-    @app.post("/correct", response_model=CorrectionResponsePayload)
-    async def correct_endpoint(payload: CorrectionRequestPayload) -> CorrectionResponsePayload:
-        """文脈校正パイプラインを適用して差分パッチを返す。"""
-
-        try:
-            options = build_correction_options(payload.options)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        context_prev = payload.context_tuple()
-        language = payload.language_or_default()
-
-        logger.debug(
-            "correct_request: text_len=%d context=%d language=%s options=%s",
-            len(payload.text),
-            len(context_prev),
-            language,
-            options.as_dict(),
-        )
-
-        try:
-            result = await asyncio.to_thread(
-                run_correction,
-                payload.text,
-                context_prev=context_prev,
-                language=language,
-                options=options,
-            )
-        except CorrectionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        patches = [CorrectionPatchPayload.from_patch(patch) for patch in result.patches]
-
-        logger.debug(
-            "correct_response: patch_count=%d text_len=%d",
-            len(patches),
-            len(result.corrected_text),
-        )
-
-        return CorrectionResponsePayload(
-            source_text=result.source_text,
-            text=result.corrected_text,
-            patches=patches,
-            patch_count=len(patches),
-            options=options.as_dict(),
-        )
 
     @app.post("/transcribe", response_model=list[TranscriptionResult])
     async def transcribe_endpoint(  # noqa: PLR0912 - 例外処理で分岐が増える

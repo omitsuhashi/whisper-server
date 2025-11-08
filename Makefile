@@ -5,7 +5,6 @@ HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 0
 LOG_LEVEL ?= INFO
-LLM_POLISH_MODEL ?= mlx-community/Qwen3-1.7B-MLX-MXFP4
 
 ifeq ($(firstword $(MAKECMDGOALS)),cli-files)
   CLI_FILES_EXTRA := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
@@ -57,7 +56,7 @@ define RUN_AUDIO_STREAM
 	ffmpeg -hide_banner -loglevel error -f "$$INPUT_FMT" -i "$$DEVICE_VAL" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS
 endef
 
-.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-stream-polish audio-devices http test shell
+.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell
 
 help:
 	@echo "Available targets:"
@@ -72,8 +71,6 @@ help:
 	@echo "                               # 標準入力経由でストリーム書き起こし (音声バイトをパイプで供給すること)"
 	@echo "  make audio-stream [DEVICE=...] [SECONDS=...] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # マイク録音→CLI ストリーム (OS ごとに自動判定)"
-	@echo "  make audio-stream-polish [DEVICE=...] [SECONDS=...] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...]"
-	@echo "                               # マイク録音→CLI ストリーム (書き起こし後に校正、テキストのみ出力)"
 	@echo "  make audio-devices           # 利用可能な録音デバイス一覧を表示"
 	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=1] [LOG_LEVEL=DEBUG] [MEM_DIAG=1]"
 	@echo "                               # FastAPI サーバーを uvicorn で起動 (MEM_DIAG=1 でメモリ診断ログを有効化)"
@@ -128,9 +125,6 @@ cli-stream:
 audio-stream:
 	$(call RUN_AUDIO_STREAM,)
 
-audio-stream-polish:
-	$(call RUN_AUDIO_STREAM,--polish --plain-text)
-
 audio-devices:
 	@OS_NAME=$$(uname 2>/dev/null || echo Unknown); \
 	if [ "$$OS_NAME" = "Darwin" ]; then \
@@ -154,7 +148,7 @@ http:
 	@RELOAD_FLAG=""; \
 	if [ "$(HTTP_RELOAD)" != "0" ]; then RELOAD_FLAG="--reload"; fi; \
 	LOWER_LOG_LEVEL=$$(printf '%s' "$(LOG_LEVEL)" | tr '[:upper:]' '[:lower:]'); \
-	ENVV="LOG_LEVEL=$(LOG_LEVEL) LLM_POLISH_MODEL=$(LLM_POLISH_MODEL)"; \
+	ENVV="LOG_LEVEL=$(LOG_LEVEL)"; \
 	if [ "$(MEM_DIAG)" = "1" ]; then ENVV="$$ENVV MEM_DIAG=1"; fi; \
 	echo "env $$ENVV $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL"; \
 	env $$ENVV $(UVICORN) src.cmd.http:create_app $$RELOAD_FLAG --host $(HTTP_HOST) --port $(HTTP_PORT) --factory --log-level $$LOWER_LOG_LEVEL

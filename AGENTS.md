@@ -5,7 +5,7 @@
 Japanese
 
 ## Project Structure & Module Organization
-アプリケーションコードは `src/` に集約され、CLI エントリーポイントは `src/cmd/cli.py`、FastAPI アプリケーションファクトリは `src/cmd/http.py` にあります。音声認識や話者分離などのドメインロジックは `src/lib/asr`・`audio`・`diarize`・`polish` に整理され、共通設定は `src/config` を確認してください。依存関係は `pyproject.toml` と `uv.lock` で管理されるため、ライブラリ更新時は両ファイルを同期させましょう。ユニットテストは `tests/` の `test_*.py` 形式で配置され、サンプル音声は `media/` に保管されています。上位の `Makefile` には開発作業で頻用するターゲットがまとまっています。
+アプリケーションコードは `src/` に集約され、CLI エントリーポイントは `src/cmd/cli.py`、FastAPI アプリケーションファクトリは `src/cmd/http.py` にあります。音声認識や話者分離などのドメインロジックは `src/lib/asr`・`audio`・`diarize`・`context` に整理され、共通設定は `src/config` を確認してください。依存関係は `pyproject.toml` と `uv.lock` で管理されるため、ライブラリ更新時は両ファイルを同期させましょう。ユニットテストは `tests/` の `test_*.py` 形式で配置され、サンプル音声は `media/` に保管されています。上位の `Makefile` には開発作業で頻用するターゲットがまとまっています。
 
 ## Build, Test, and Development Commands
 - `uv sync` : `uv.lock` に記録された依存関係を再現します。`uv` が使えない場合は仮想環境を作成し `pip install -e .` を利用してください。
