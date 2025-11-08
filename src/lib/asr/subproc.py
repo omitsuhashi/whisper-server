@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 import os
 import threading
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Iterable
 
 from src.lib.asr.models import TranscriptionResult
+
+logger = logging.getLogger(__name__)
 
 _IDLE_TIMEOUT = max(float(os.getenv("ASR_SUBPROC_IDLE_SECONDS", "600") or 0.0), 0.0)
 _REQUEST_TIMEOUT = max(float(os.getenv("ASR_SUBPROC_REQUEST_TIMEOUT", "300") or 0.0), 0.0) or None
@@ -27,6 +30,7 @@ class _WorkerHandle:
         self._process = ctx.Process(target=_worker_entrypoint, args=(child_conn,), daemon=True)
         self._process.start()
         child_conn.close()
+        logger.info("ASRサブプロセスを起動: pid=%s", self._process.pid)
 
     @property
     def pid(self) -> int | None:
@@ -107,22 +111,24 @@ def _ensure_worker() -> _WorkerHandle:
     global _WORKER_HANDLE
     with _WORKER_LOCK:
         if _WORKER_HANDLE is None or not _WORKER_HANDLE.is_alive():
-            _shutdown_worker_locked()
+            _shutdown_worker_locked(reason="restart")
             _WORKER_HANDLE = _WorkerHandle()
         return _WORKER_HANDLE
 
 
-def _shutdown_worker_locked() -> None:
+def _shutdown_worker_locked(*, reason: str = "unspecified") -> None:
     global _WORKER_HANDLE
     global _SHUTDOWN_TIMER
     if _SHUTDOWN_TIMER is not None:
         _SHUTDOWN_TIMER.cancel()
         _SHUTDOWN_TIMER = None
     if _WORKER_HANDLE is not None:
+        pid = _WORKER_HANDLE.pid
         try:
             _WORKER_HANDLE.shutdown()
         except Exception:
-            pass
+            logger.warning("ASRサブプロセスの停止処理で例外: pid=%s 理由=%s", pid or "unknown", reason, exc_info=True)
+        logger.info("ASRサブプロセスを停止: pid=%s 理由=%s", pid or "unknown", reason)
         _WORKER_HANDLE = None
 
 
@@ -132,7 +138,7 @@ def _schedule_idle_shutdown() -> None:
 
     def _timeout_shutdown() -> None:
         with _WORKER_LOCK:
-            _shutdown_worker_locked()
+            _shutdown_worker_locked(reason="idle_timeout")
 
     global _SHUTDOWN_TIMER
     if _SHUTDOWN_TIMER is not None:
@@ -165,7 +171,7 @@ def transcribe_paths_via_worker(
         except (TimeoutError, BrokenPipeError, EOFError, OSError):
             attempts += 1
             with _WORKER_LOCK:
-                _shutdown_worker_locked()
+                _shutdown_worker_locked(reason="request_failure")
             if attempts >= 2:
                 raise
             time.sleep(0.1)
