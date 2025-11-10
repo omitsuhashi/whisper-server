@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..audio import decode_audio_bytes, encode_waveform_to_wav_bytes
+from ..vad import SpeechSegment, VadConfig, detect_voice_segments
 from .models import TranscriptionResult, TranscriptionSegment
 from .main import transcribe_all_bytes as _default_transcribe_all_bytes
 
 # Whisper の標準サンプルレート（16kHz）
 _SR = 16000
 
+logger = logging.getLogger(__name__)
+
+ChunkWindow = Tuple[int, int, int, int]
 TranscribeBytesFn = Callable[..., List[TranscriptionResult]]
+_DEFAULT_VAD_CONFIG = VadConfig()
 
 
-def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[Tuple[int, int, int, int]]:
+def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
     """チャンクとオーバーラップを考慮した領域リストを返す。
 
     戻り値は (raw_start, raw_end, main_start, main_end) のタプル。
@@ -55,7 +61,7 @@ def _clip_segment(start: float, end: float, window_start: float, window_end: flo
 def _merge_results(
     partials: Sequence[TranscriptionResult],
     *,
-    chunk_windows: Sequence[Tuple[int, int, int, int]],
+    chunk_windows: Sequence[ChunkWindow],
     filename: str,
     language: Optional[str],
 ) -> TranscriptionResult:
@@ -111,6 +117,87 @@ def _merge_results(
     )
 
 
+def _phase_detect_segments(
+    waveform: np.ndarray,
+    sample_rate: int,
+    *,
+    vad_config: VadConfig,
+) -> List[SpeechSegment]:
+    """Phase 1 (VAD): 波形から音声セグメントを抽出する。"""
+
+    try:
+        segments = detect_voice_segments(waveform, sample_rate, config=vad_config)
+    except Exception:  # noqa: BLE001 - VAD 失敗時は従来チャンクへフォールバックする
+        logger.debug("vad_detection_failed", exc_info=True)
+        return []
+    if not segments:
+        logger.debug("vad_no_segments_detected")
+    return segments
+
+
+def _phase_plan_chunking(
+    total_samples: int,
+    chunk_samples: int,
+    overlap_samples: int,
+    segments: Sequence[SpeechSegment],
+) -> List[ChunkWindow]:
+    """Phase 2 (Chunking): VAD 区間を優先してチャンク計画を立てる。"""
+
+    if not segments:
+        return _build_chunks(total_samples, chunk_samples, overlap_samples)
+
+    planned: List[ChunkWindow] = []
+    for segment in segments:
+        seg_start = int(segment.start_sample)
+        seg_end = int(segment.end_sample)
+        if seg_end <= seg_start:
+            continue
+        seg_length = seg_end - seg_start
+        local_chunks = _build_chunks(seg_length, chunk_samples, overlap_samples)
+        for raw_start, raw_end, main_start, main_end in local_chunks:
+            offset = seg_start
+            planned.append(
+                (
+                    raw_start + offset,
+                    raw_end + offset,
+                    main_start + offset,
+                    main_end + offset,
+                )
+            )
+    if planned:
+        return planned
+    return _build_chunks(total_samples, chunk_samples, overlap_samples)
+
+
+def _phase_run_asr(
+    chunk_windows: Sequence[ChunkWindow],
+    waveform: np.ndarray,
+    *,
+    filename: str,
+    transcribe_fn: TranscribeBytesFn,
+    model_name: str,
+    language: Optional[str],
+    task: Optional[str],
+    decode_kwargs: dict[str, Any],
+) -> List[TranscriptionResult]:
+    """Phase 3 (ASR): チャンク列をエンコードして ASR へ渡す。"""
+
+    blobs: List[bytes] = []
+    for raw_start, raw_end, _, _ in chunk_windows:
+        chunk_wave = waveform[raw_start:raw_end]
+        blobs.append(encode_waveform_to_wav_bytes(chunk_wave, sample_rate=_SR))
+
+    chunk_names = [f"{filename}#chunk{idx+1}" for idx in range(len(chunk_windows))]
+    return transcribe_fn(
+        blobs,
+        model_name=model_name,
+        language=language,
+        task=task,
+        names=chunk_names,
+        **decode_kwargs,
+    )
+
+
 def transcribe_paths_chunked(
     audio_paths: Iterable[str | Path],
     *,
@@ -120,12 +207,14 @@ def transcribe_paths_chunked(
     chunk_seconds: float = 25.0,
     overlap_seconds: float = 1.0,
     transcribe_all_bytes_fn: Optional[TranscribeBytesFn] = None,
+    vad_config: VadConfig | None = None,
     **decode_options: Any,
 ) -> List[TranscriptionResult]:
     """ファイル入力をチャンク化し、オーバーラップを除去しながら結合する。"""
 
     fn = transcribe_all_bytes_fn or _default_transcribe_all_bytes
     decode_kwargs = dict(decode_options or {})
+    vad_cfg = vad_config or _DEFAULT_VAD_CONFIG
     results: List[TranscriptionResult] = []
 
     chunk_seconds = max(float(chunk_seconds or 0.0), 0.0)
@@ -159,21 +248,17 @@ def transcribe_paths_chunked(
 
         chunk_samples = max(int(_SR * chunk_seconds), 1)
         overlap_samples = int(_SR * overlap_seconds)
-        chunk_windows = _build_chunks(total, chunk_samples, overlap_samples)
-
-        blobs: List[bytes] = []
-        for raw_start, raw_end, _, _ in chunk_windows:
-            chunk_wave = waveform[raw_start:raw_end]
-            blobs.append(encode_waveform_to_wav_bytes(chunk_wave, sample_rate=_SR))
-
-        chunk_names = [f"{path.name}#chunk{idx+1}" for idx in range(len(chunk_windows))]
-        partials = fn(
-            blobs,
+        segments = _phase_detect_segments(waveform, _SR, vad_config=vad_cfg)
+        chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
+        partials = _phase_run_asr(
+            chunk_windows,
+            waveform,
+            filename=path.name,
+            transcribe_fn=fn,
             model_name=model_name,
             language=language,
             task=task,
-            names=chunk_names,
-            **decode_kwargs,
+            decode_kwargs=decode_kwargs,
         )
         merged = _merge_results(partials, chunk_windows=chunk_windows, filename=path.name, language=language)
         results.append(merged)
