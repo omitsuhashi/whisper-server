@@ -88,16 +88,16 @@ class ASRSubprocessTests(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
 
-    def test_handle_transcribe_uses_chunking_when_configured(self) -> None:
+    @mock.patch("src.lib.asr.subproc._resolve_chunk_transcriber")
+    def test_handle_transcribe_uses_chunking_when_configured(self, mock_resolve: mock.Mock) -> None:
         previous_mode = self.module._TEST_MODE
         self.module._TEST_MODE = False  # type: ignore[attr-defined]
-        original_chunker = getattr(self.module, "_CHUNK_TRANSCRIBE", None)
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
-                path_name = Path(tmp.name).name
-                fake_result = TranscriptionResult(filename=path_name, text="done", language="ja", segments=[])
+                tmp_path = Path(tmp.name)
+                fake_result = TranscriptionResult(filename=tmp_path.name, text="done", language="ja", segments=[])
                 mock_chunked = mock.Mock(return_value=[fake_result])
-                self.module._CHUNK_TRANSCRIBE = mock_chunked  # type: ignore[attr-defined]
+                mock_resolve.return_value = mock_chunked
                 rows = self.module._handle_transcribe(  # type: ignore[attr-defined]
                     {
                         "paths": [tmp.name],
@@ -111,16 +111,45 @@ class ASRSubprocessTests(unittest.TestCase):
                 )
 
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["filename"], path_name)
+            self.assertEqual(rows[0]["filename"], tmp_path.name)
             mock_chunked.assert_called_once()
             args, kwargs = mock_chunked.call_args
-            self.assertEqual([Path(tmp.name)], list(args[0]))
+            self.assertEqual([tmp_path], list(args[0]))
             self.assertEqual(kwargs["chunk_seconds"], 10.0)
             self.assertEqual(kwargs["overlap_seconds"], 2.0)
             self.assertIn("initial_prompt", kwargs)
         finally:
             self.module._TEST_MODE = previous_mode  # type: ignore[attr-defined]
-            self.module._CHUNK_TRANSCRIBE = original_chunker  # type: ignore[attr-defined]
+
+    @mock.patch("src.lib.asr.subproc._transcribe_full_paths")
+    @mock.patch("src.lib.asr.subproc._resolve_chunk_transcriber")
+    def test_handle_transcribe_skips_chunking_when_zero(
+        self,
+        mock_resolve: mock.Mock,
+        mock_full: mock.Mock,
+    ) -> None:
+        previous_mode = self.module._TEST_MODE
+        self.module._TEST_MODE = False  # type: ignore[attr-defined]
+        try:
+            result = TranscriptionResult(filename="full.wav", text="ok", language="ja", segments=[])
+            mock_full.return_value = [result]
+            rows = self.module._handle_transcribe(  # type: ignore[attr-defined]
+                {
+                    "paths": ["dummy.wav"],
+                    "model_name": "demo",
+                    "language": "ja",
+                    "task": None,
+                    "decode_options": {},
+                    "chunk_seconds": 0.0,
+                    "overlap_seconds": 1.0,
+                }
+            )
+        finally:
+            self.module._TEST_MODE = previous_mode  # type: ignore[attr-defined]
+
+        self.assertEqual(len(rows), 1)
+        mock_full.assert_called_once()
+        mock_resolve.assert_not_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

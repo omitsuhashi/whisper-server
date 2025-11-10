@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import multiprocessing as mp
 import os
 import threading
@@ -21,7 +22,6 @@ _WORKER_LOCK = threading.Lock()
 _WORKER_HANDLE: "_WorkerHandle | None" = None
 _SHUTDOWN_TIMER: threading.Timer | None = None
 _CHUNK_TRANSCRIBE: Callable[..., list[TranscriptionResult]] | None = None
-Callable = Any  # forward reference for type hints without importing typing.Callable?
 
 
 class _WorkerHandle:
@@ -32,7 +32,7 @@ class _WorkerHandle:
         self._process = ctx.Process(target=_worker_entrypoint, args=(child_conn,), daemon=True)
         self._process.start()
         child_conn.close()
-        logger.info("ASRサブプロセスを起動: pid=%s", self._process.pid)
+        logger.debug("ASRサブプロセスを起動: pid=%s", self._process.pid)
 
     @property
     def pid(self) -> int | None:
@@ -104,24 +104,28 @@ def _handle_transcribe(message: dict) -> list[dict]:
             for path in paths
         ]
 
-    try:
-        chunk_value = float(chunk_seconds)
-    except (TypeError, ValueError):
-        chunk_value = 0.0
+    chunk_value = _clamp_non_negative(chunk_seconds)
+    overlap_value = _clamp_non_negative(overlap_seconds)
 
-    try:
-        overlap_value = float(overlap_seconds)
-    except (TypeError, ValueError):
-        overlap_value = 0.0
+    if chunk_value <= 0.0:
+        results = _transcribe_full_paths(
+            paths,
+            model_name=model_name,
+            language=language,
+            task=task,
+            decode_options=decode_options,
+        )
+        return [res.model_dump() for res in results]
 
     chunk_fn = _resolve_chunk_transcriber()
+    effective_overlap = min(overlap_value, chunk_value / 2.0)
     results = chunk_fn(
         paths,
         model_name=model_name,
         language=language,
         task=task,
         chunk_seconds=chunk_value,
-        overlap_seconds=max(0.0, min(overlap_value, chunk_value / 2)) if chunk_value > 0 else 0.0,
+        overlap_seconds=effective_overlap,
         **decode_options,
     )
     return [res.model_dump() for res in results]
@@ -148,7 +152,7 @@ def _shutdown_worker_locked(*, reason: str = "unspecified") -> None:
             _WORKER_HANDLE.shutdown()
         except Exception:
             logger.warning("ASRサブプロセスの停止処理で例外: pid=%s 理由=%s", pid or "unknown", reason, exc_info=True)
-        logger.info("ASRサブプロセスを停止: pid=%s 理由=%s", pid or "unknown", reason)
+        logger.debug("ASRサブプロセスを停止: pid=%s 理由=%s", pid or "unknown", reason)
         _WORKER_HANDLE = None
 
 
@@ -219,6 +223,41 @@ def _resolve_chunk_transcriber() -> Callable[..., list[TranscriptionResult]]:
 
         _CHUNK_TRANSCRIBE = _chunk_fn
     return _CHUNK_TRANSCRIBE
+
+
+def _set_chunk_transcriber(fn: Callable[..., list[TranscriptionResult]] | None) -> None:
+    global _CHUNK_TRANSCRIBE
+    _CHUNK_TRANSCRIBE = fn
+
+
+def _transcribe_full_paths(
+    paths: Iterable[Path],
+    *,
+    model_name: str,
+    language: str | None,
+    task: str | None,
+    decode_options: dict[str, Any],
+) -> list[TranscriptionResult]:
+    from src.lib.asr.options import TranscribeOptions  # noqa: WPS433 - worker内のみ import
+    from src.lib.asr.pipeline import transcribe_paths  # noqa: WPS433
+
+    options = TranscribeOptions(
+        model_name=model_name,
+        language=language,
+        task=task,
+        decode_options=dict(decode_options),
+    )
+    return transcribe_paths(paths, options=options)
+
+
+def _clamp_non_negative(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return max(0.0, numeric)
 
 
 __all__ = ["transcribe_paths_via_worker"]
