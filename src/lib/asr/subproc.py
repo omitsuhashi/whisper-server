@@ -7,7 +7,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from src.lib.asr.models import TranscriptionResult
 
@@ -20,6 +20,8 @@ _TEST_MODE = os.getenv("ASR_SUBPROC_TEST_MODE", "0").lower() in {"1", "true", "o
 _WORKER_LOCK = threading.Lock()
 _WORKER_HANDLE: "_WorkerHandle | None" = None
 _SHUTDOWN_TIMER: threading.Timer | None = None
+_CHUNK_TRANSCRIBE: Callable[..., list[TranscriptionResult]] | None = None
+Callable = Any  # forward reference for type hints without importing typing.Callable?
 
 
 class _WorkerHandle:
@@ -87,6 +89,8 @@ def _handle_transcribe(message: dict) -> list[dict]:
     language = message.get("language")
     task = message.get("task")
     decode_options = message.get("decode_options") or {}
+    chunk_seconds = message.get("chunk_seconds")
+    overlap_seconds = message.get("overlap_seconds")
 
     if _TEST_MODE:
         return [
@@ -100,16 +104,26 @@ def _handle_transcribe(message: dict) -> list[dict]:
             for path in paths
         ]
 
-    from src.lib.asr.options import TranscribeOptions  # noqa: WPS433 - worker内のみで import
-    from src.lib.asr.pipeline import transcribe_paths  # noqa: WPS433
+    try:
+        chunk_value = float(chunk_seconds)
+    except (TypeError, ValueError):
+        chunk_value = 0.0
 
-    options = TranscribeOptions(
+    try:
+        overlap_value = float(overlap_seconds)
+    except (TypeError, ValueError):
+        overlap_value = 0.0
+
+    chunk_fn = _resolve_chunk_transcriber()
+    results = chunk_fn(
+        paths,
         model_name=model_name,
         language=language,
         task=task,
-        decode_options=dict(decode_options),
+        chunk_seconds=chunk_value,
+        overlap_seconds=max(0.0, min(overlap_value, chunk_value / 2)) if chunk_value > 0 else 0.0,
+        **decode_options,
     )
-    results = transcribe_paths(paths, options=options)
     return [res.model_dump() for res in results]
 
 
@@ -161,6 +175,8 @@ def transcribe_paths_via_worker(
     model_name: str,
     language: str | None,
     task: str | None,
+    chunk_seconds: float | None = None,
+    overlap_seconds: float | None = None,
     **decode_options: Any,
 ) -> list[TranscriptionResult]:
     payload = {
@@ -169,6 +185,8 @@ def transcribe_paths_via_worker(
         "model_name": model_name,
         "language": language,
         "task": task,
+        "chunk_seconds": chunk_seconds,
+        "overlap_seconds": overlap_seconds,
         "decode_options": dict(decode_options or {}),
     }
     attempts = 0
@@ -192,6 +210,15 @@ def transcribe_paths_via_worker(
         return [TranscriptionResult.model_validate(entry) for entry in response.get("results") or []]
 
     raise RuntimeError("ASR worker unavailable")
+
+
+def _resolve_chunk_transcriber() -> Callable[..., list[TranscriptionResult]]:
+    global _CHUNK_TRANSCRIBE
+    if _CHUNK_TRANSCRIBE is None:
+        from src.lib.asr.chunking import transcribe_paths_chunked as _chunk_fn  # noqa: WPS433
+
+        _CHUNK_TRANSCRIBE = _chunk_fn
+    return _CHUNK_TRANSCRIBE
 
 
 __all__ = ["transcribe_paths_via_worker"]

@@ -5,6 +5,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from src.lib.asr.models import TranscriptionResult
 
 
 class ASRSubprocessTests(unittest.TestCase):
@@ -84,6 +87,40 @@ class ASRSubprocessTests(unittest.TestCase):
             )
 
         self.assertEqual(len(result), 1)
+
+    def test_handle_transcribe_uses_chunking_when_configured(self) -> None:
+        previous_mode = self.module._TEST_MODE
+        self.module._TEST_MODE = False  # type: ignore[attr-defined]
+        original_chunker = getattr(self.module, "_CHUNK_TRANSCRIBE", None)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+                path_name = Path(tmp.name).name
+                fake_result = TranscriptionResult(filename=path_name, text="done", language="ja", segments=[])
+                mock_chunked = mock.Mock(return_value=[fake_result])
+                self.module._CHUNK_TRANSCRIBE = mock_chunked  # type: ignore[attr-defined]
+                rows = self.module._handle_transcribe(  # type: ignore[attr-defined]
+                    {
+                        "paths": [tmp.name],
+                        "model_name": "demo",
+                        "language": "ja",
+                        "task": None,
+                        "decode_options": {"initial_prompt": "foo"},
+                        "chunk_seconds": 10.0,
+                        "overlap_seconds": 2.0,
+                    }
+                )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["filename"], path_name)
+            mock_chunked.assert_called_once()
+            args, kwargs = mock_chunked.call_args
+            self.assertEqual([Path(tmp.name)], list(args[0]))
+            self.assertEqual(kwargs["chunk_seconds"], 10.0)
+            self.assertEqual(kwargs["overlap_seconds"], 2.0)
+            self.assertIn("initial_prompt", kwargs)
+        finally:
+            self.module._TEST_MODE = previous_mode  # type: ignore[attr-defined]
+            self.module._CHUNK_TRANSCRIBE = original_chunker  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":  # pragma: no cover

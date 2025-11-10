@@ -143,6 +143,8 @@ def create_app() -> FastAPI:
                         model_name=model_name,
                         language=language,
                         task=task,
+                        chunk_seconds=float(effective_chunk),
+                        overlap_seconds=float(effective_overlap),
                         **decode_kwargs,
                     )
 
