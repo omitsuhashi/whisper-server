@@ -5,6 +5,8 @@ HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 0
 LOG_LEVEL ?= INFO
+COMPOSE ?= docker compose
+KB_PATH ?= media
 
 ifeq ($(firstword $(MAKECMDGOALS)),cli-files)
   CLI_FILES_EXTRA := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
@@ -56,7 +58,7 @@ define RUN_AUDIO_STREAM
 	ffmpeg -hide_banner -loglevel error -f "$$INPUT_FMT" -i "$$DEVICE_VAL" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS
 endef
 
-.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell
+.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell db-up db-down db-logs kb-ingest
 
 help:
 	@echo "Available targets:"
@@ -74,6 +76,11 @@ help:
 	@echo "  make audio-devices           # 利用可能な録音デバイス一覧を表示"
 	@echo "  make http [HTTP_HOST=...] [HTTP_PORT=...] [HTTP_RELOAD=1] [LOG_LEVEL=DEBUG] [MEM_DIAG=1]"
 	@echo "                               # FastAPI サーバーを uvicorn で起動 (MEM_DIAG=1 でメモリ診断ログを有効化)"
+	@echo "  make db-up                   # docker compose で pgvector DB を起動"
+	@echo "  make db-down                 # docker compose のリソースを停止/削除"
+	@echo "  make db-logs                 # DB コンテナのログを tail"
+	@echo "  make kb-ingest [KB_PATH=media] [KB_PATTERN=**/*.md] [KB_LANGUAGE=ja] [KB_MAX_CHARS=1200]"
+	@echo "                               # ナレッジベースへファイル取り込み (CLI kb ingest 経由)"
 cli:
 	$(CLI)
 cli-help:
@@ -165,3 +172,24 @@ shell:
 	@SHELL=$$SHELL; \
 	if [ -z "$$SHELL" ]; then SHELL=/bin/bash; fi; \
 	$$SHELL --login -i -c "source .venv/bin/activate && exec $$SHELL"
+
+db-up:
+	$(COMPOSE) up -d db
+
+db-down:
+	$(COMPOSE) down
+
+db-logs:
+	$(COMPOSE) logs -f db
+
+kb-ingest:
+	@if [ -z "$(KB_PATH)" ]; then \
+		echo "KB_PATH を指定するか、既定の media を用意してください。"; \
+		exit 1; \
+	fi
+	@FLAGS=""; \
+	if [ -n "$(KB_PATTERN)" ]; then FLAGS="$$FLAGS --pattern $(KB_PATTERN)"; fi; \
+	if [ -n "$(KB_LANGUAGE)" ]; then FLAGS="$$FLAGS --language $(KB_LANGUAGE)"; fi; \
+	if [ -n "$(KB_MAX_CHARS)" ]; then FLAGS="$$FLAGS --max-chars $(KB_MAX_CHARS)"; fi; \
+	echo "$(CLI) kb ingest --path $(KB_PATH) $$FLAGS"; \
+	$(CLI) kb ingest --path $(KB_PATH) $$FLAGS

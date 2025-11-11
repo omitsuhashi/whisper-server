@@ -1,0 +1,24 @@
+services:
+  db:
+    image: ankane/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${KB_DB_USER:-kb}
+      POSTGRES_PASSWORD: ${KB_DB_PASSWORD:-kbpass}
+      POSTGRES_DB: ${KB_DB_NAME:-kb}
+    ports:
+      - "${KB_DB_PORT:-5450}:5432"
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h localhost",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      com.the3.role: "kb-db"

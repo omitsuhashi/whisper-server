@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Sequence, TYPE_CHECKING, cast
+from typing import Any, Callable, Iterable, List, Sequence, TYPE_CHECKING, cast, Union
 
 # 直接スクリプトとして実行された場合でも src パッケージを解決できるようにする
 if __package__ in {None, ""}:  # python src/cmd/cli.py 等の実行形態に対応
@@ -62,11 +62,24 @@ class FrameExtractionResult:
     frames: List[SavedFrameInfo]
 
 
+@dataclass(frozen=True)
+class KbIngestSummary:
+    target: Path
+    files_discovered: int
+    notes_created: int
+    units_created: int
+    skipped: int
+    errors: list[str]
+
+
 CommandResult = (
-    list["TranscriptionResult"]
-    | list[FrameExtractionResult]
-    | list["DiarizationResult"]
-    | YouTubeFetchResult
+    Union[
+        list["TranscriptionResult"],
+        list[FrameExtractionResult],
+        list["DiarizationResult"],
+        YouTubeFetchResult,
+        KbIngestSummary,
+    ]
 )
 CommandHandler = Callable[[argparse.Namespace], CommandResult]
 Validator = Callable[[argparse.Namespace], None]
@@ -367,6 +380,46 @@ def _configure_youtube_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _configure_kb_parser(parser: argparse.ArgumentParser) -> None:
+    subparsers = parser.add_subparsers(dest="kb_subcommand")
+    subparsers.required = True
+
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="media や任意ディレクトリのファイルをナレッジベースへ登録する",
+    )
+    ingest_parser.add_argument(
+        "--path",
+        dest="kb_path",
+        default="media",
+        help="取り込み対象のファイルまたはディレクトリ (既定: media)",
+    )
+    ingest_parser.add_argument(
+        "--pattern",
+        dest="kb_pattern",
+        default=None,
+        help="glob パターンで対象ファイルを絞り込む (例: '**/*.md')",
+    )
+    ingest_parser.add_argument(
+        "--language",
+        dest="kb_language",
+        default=DEFAULT_LANGUAGE,
+        help="チャンク生成で使用する言語コード (既定: ja)",
+    )
+    ingest_parser.add_argument(
+        "--max-chars",
+        dest="kb_max_chars",
+        type=int,
+        default=1200,
+        help="1 チャンクあたりの最大文字数 (semantic-text-splitter)",
+    )
+    ingest_parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
+    )
+
+
 def _prepare_asr_runtime(
     args: argparse.Namespace,
 ) -> tuple[str, str | None, Any, Any]:
@@ -490,6 +543,13 @@ def _handle_youtube_command(args: argparse.Namespace) -> CommandResult:
     return _run_youtube_fetch(args)
 
 
+def _handle_kb_command(args: argparse.Namespace) -> CommandResult:
+    subcommand = getattr(args, "kb_subcommand", None)
+    if subcommand == "ingest":
+        return _run_kb_ingest(args)
+    raise RuntimeError(f"未対応の kb サブコマンドです: {subcommand}")
+
+
 def _validate_youtube_args(args: argparse.Namespace) -> None:
     if not (getattr(args, "youtube_handle", None) or getattr(args, "youtube_channel_id", None)):
         raise ValueError("--handle もしくは --channel-id のいずれかを指定してください。")
@@ -528,6 +588,13 @@ _SUBCOMMAND_SPECS: tuple[SubcommandSpec, ...] = (
         configure=_configure_youtube_parser,
         handler=_handle_youtube_command,
         validators=(_validate_youtube_args,),
+    ),
+    SubcommandSpec(
+        name="kb",
+        help="ナレッジベースの取り込み・管理を行う",
+        configure=_configure_kb_parser,
+        handler=_handle_kb_command,
+        description="RAG 用ナレッジベースの ingest / query を扱う上位コマンド",
     ),
 )
 
@@ -646,6 +713,31 @@ def _run_youtube_fetch(args: argparse.Namespace) -> YouTubeFetchResult:
         ensure_ascii=ensure_ascii,
     )
     return YouTubeFetchResult(output_path=output_path)
+
+
+def _run_kb_ingest(args: argparse.Namespace) -> KbIngestSummary:
+    from src.lib.kb.ingest import IngestOptions, ingest
+
+    path = Path(getattr(args, "kb_path")).expanduser()
+    pattern = getattr(args, "kb_pattern", None)
+    language = getattr(args, "kb_language", DEFAULT_LANGUAGE)
+    max_chars = max(int(getattr(args, "kb_max_chars", 1200)), 1)
+
+    options = IngestOptions(
+        root=path,
+        pattern=pattern,
+        language=language,
+        max_chars=max_chars,
+    )
+    stats = ingest(options)
+    return KbIngestSummary(
+        target=path,
+        files_discovered=stats.files_discovered,
+        notes_created=stats.notes_created,
+        units_created=stats.units_created,
+        skipped=stats.skipped,
+        errors=stats.errors,
+    )
 
 
 def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
