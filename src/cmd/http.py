@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
@@ -24,6 +25,9 @@ from src.lib.audio import (
 )
 from src.lib.diagnostics.memwatch import ensure_memory_watchdog
 from src.lib.asr.subproc import transcribe_paths_via_worker
+from src.lib.kb.ingest import IngestOptions, ingest
+from src.lib.kb.embed import populate_missing_embeddings
+from src.lib.kb.query import run_query
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,50 @@ def create_app() -> FastAPI:
     setup_logging()
     ensure_memory_watchdog()
     app = FastAPI(title="mlx Whisper ASR")
+
+    class KbIngestRequest(BaseModel):
+        path: str = "media"
+        pattern: Optional[str] = None
+        language: str = DEFAULT_LANGUAGE
+        max_chars: int = 1200
+        auto_embed: bool = False
+
+    class KbIngestResponse(BaseModel):
+        target: str
+        files_discovered: int
+        notes_created: int
+        units_created: int
+        embedded_units: int
+        skipped: int
+        errors: list[str]
+
+    class KbEmbedRequest(BaseModel):
+        batch_size: int = 16
+        limit: Optional[int] = None
+
+    class KbEmbedResponse(BaseModel):
+        processed_units: int
+        embedded_units: int
+
+    class KbQueryRequest(BaseModel):
+        text: str
+        topn_dense: int = 50
+        topk: int = 10
+        lambda_mmr: float = 0.5
+        alpha_time: float = 0.2
+
+    class KbQueryHit(BaseModel):
+        unit_id: int
+        title: Optional[str]
+        source: Optional[str]
+        text: str
+        created_at: str
+        similarity: float
+        freshness: float
+
+    class KbQueryResponse(BaseModel):
+        query: str
+        hits: list[KbQueryHit]
 
     @app.get("/healthz")
     async def health_check() -> dict[str, str]:
@@ -197,6 +245,69 @@ def create_app() -> FastAPI:
         )
 
         return updated
+
+    @app.post("/kb/ingest", response_model=KbIngestResponse)
+    async def kb_ingest_endpoint(payload: KbIngestRequest) -> KbIngestResponse:
+        target_path = Path(payload.path).expanduser()
+        options = IngestOptions(
+            root=target_path,
+            pattern=payload.pattern,
+            language=payload.language or DEFAULT_LANGUAGE,
+            max_chars=max(int(payload.max_chars), 1),
+            auto_embed=payload.auto_embed,
+        )
+        stats = await asyncio.to_thread(ingest, options)
+        return KbIngestResponse(
+            target=str(target_path),
+            files_discovered=stats.files_discovered,
+            notes_created=stats.notes_created,
+            units_created=stats.units_created,
+            embedded_units=stats.embedded_units,
+            skipped=stats.skipped,
+            errors=stats.errors,
+        )
+
+    @app.post("/kb/embed", response_model=KbEmbedResponse)
+    async def kb_embed_endpoint(payload: KbEmbedRequest) -> KbEmbedResponse:
+        batch_size = max(int(payload.batch_size), 1)
+        limit = payload.limit if payload.limit is None else max(int(payload.limit), 1)
+        result = await asyncio.to_thread(
+            populate_missing_embeddings,
+            batch_size=batch_size,
+            limit=limit,
+        )
+        return KbEmbedResponse(
+            processed_units=result.processed_units,
+            embedded_units=result.embedded_units,
+        )
+
+    @app.post("/kb/query", response_model=KbQueryResponse)
+    async def kb_query_endpoint(payload: KbQueryRequest) -> KbQueryResponse:
+        if not payload.text.strip():
+            raise HTTPException(status_code=400, detail="クエリ文字列を指定してください。")
+        topn = max(int(payload.topn_dense), 1)
+        topk = max(int(payload.topk), 1)
+        result = await asyncio.to_thread(
+            run_query,
+            payload.text,
+            topn_dense=topn,
+            topk=topk,
+            lam_mmr=float(payload.lambda_mmr),
+            alpha_time=float(payload.alpha_time),
+        )
+        hits = [
+            KbQueryHit(
+                unit_id=hit.unit_id,
+                title=hit.title,
+                source=hit.source,
+                text=hit.text,
+                created_at=hit.created_at.isoformat(),
+                similarity=hit.similarity,
+                freshness=hit.freshness,
+            )
+            for hit in result.hits
+        ]
+        return KbQueryResponse(query=result.query, hits=hits)
 
     return app
 app = create_app()

@@ -29,6 +29,7 @@ class IngestOptions:
     pattern: str | None = None
     language: str = "ja"
     max_chars: int = 1200
+    auto_embed: bool = False
 
 
 @dataclass
@@ -38,6 +39,7 @@ class IngestStats:
     units_created: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    embedded_units: int = 0
 
 
 def ingest(options: IngestOptions) -> IngestStats:
@@ -51,6 +53,7 @@ def ingest(options: IngestOptions) -> IngestStats:
         return stats
 
     with session_scope() as session:
+        units_to_embed: list[tuple[Unit, str]] = []
         for file_path in files:
             try:
                 body = load_text(file_path)
@@ -76,15 +79,25 @@ def ingest(options: IngestOptions) -> IngestStats:
 
             chunks = semantic_chunks(body, language=options.language, max_chars=options.max_chars)
             for chunk in chunks:
-                session.add(
-                    Unit(
-                        note_id=note.id,
-                        utype="semantic",
-                        text=chunk,
-                    ),
+                unit = Unit(
+                    note_id=note.id,
+                    utype="semantic",
+                    text=chunk,
                 )
+                session.add(unit)
+                session.flush()
+                if options.auto_embed:
+                    units_to_embed.append((unit, chunk))
             stats.notes_created += 1
             stats.units_created += len(chunks)
+
+        if options.auto_embed and units_to_embed:
+            from .embed import encode_passages
+
+            vectors = encode_passages([chunk for (_, chunk) in units_to_embed])
+            for (unit, _chunk), vector in zip(units_to_embed, vectors):
+                unit.embed = vector.tolist()
+            stats.embedded_units = len(units_to_embed)
 
     return stats
 

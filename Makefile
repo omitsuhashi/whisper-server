@@ -58,7 +58,7 @@ define RUN_AUDIO_STREAM
 	ffmpeg -hide_banner -loglevel error -f "$$INPUT_FMT" -i "$$DEVICE_VAL" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS
 endef
 
-.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell db-up db-down db-logs kb-ingest
+.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell db-up db-down db-logs kb-ingest kb-embed kb-query
 
 help:
 	@echo "Available targets:"
@@ -81,6 +81,9 @@ help:
 	@echo "  make db-logs                 # DB コンテナのログを tail"
 	@echo "  make kb-ingest [KB_PATH=media] [KB_PATTERN=**/*.md] [KB_LANGUAGE=ja] [KB_MAX_CHARS=1200]"
 	@echo "                               # ナレッジベースへファイル取り込み (CLI kb ingest 経由)"
+	@echo "  make kb-embed [BATCH_SIZE=16] [LIMIT=100]   # 埋め込み未設定ユニットをバッチ更新"
+	@echo "  make kb-query QUERY=\"質問\" [TOPN=50] [TOPK=10] [LAMBDA=0.5] [ALPHA=0.2]"
+	@echo "                               # KB ハイブリッド検索を CLI から実行"
 cli:
 	$(CLI)
 cli-help:
@@ -193,3 +196,23 @@ kb-ingest:
 	if [ -n "$(KB_MAX_CHARS)" ]; then FLAGS="$$FLAGS --max-chars $(KB_MAX_CHARS)"; fi; \
 	echo "$(CLI) kb ingest --path $(KB_PATH) $$FLAGS"; \
 	$(CLI) kb ingest --path $(KB_PATH) $$FLAGS
+
+kb-embed:
+	@FLAGS=""
+	@if [ -n "$(BATCH_SIZE)" ]; then FLAGS="$$FLAGS --batch-size $(BATCH_SIZE)"; fi; \
+	if [ -n "$(LIMIT)" ]; then FLAGS="$$FLAGS --limit $(LIMIT)"; fi; \
+	echo "$(CLI) kb embed $$FLAGS"; \
+	$(CLI) kb embed $$FLAGS
+
+kb-query:
+	@if [ -z "$(QUERY)" ]; then \
+		echo "Usage: make $@ QUERY=\"質問内容\" [TOPN=50] [TOPK=10] [LAMBDA=0.5] [ALPHA=0.2]"; \
+		exit 1; \
+	fi
+	@FLAGS=""
+	@if [ -n "$(TOPN)" ]; then FLAGS="$$FLAGS --topn-dense $(TOPN)"; fi; \
+	if [ -n "$(TOPK)" ]; then FLAGS="$$FLAGS --topk $(TOPK)"; fi; \
+	if [ -n "$(LAMBDA)" ]; then FLAGS="$$FLAGS --lambda-mmr $(LAMBDA)"; fi; \
+	if [ -n "$(ALPHA)" ]; then FLAGS="$$FLAGS --alpha-time $(ALPHA)"; fi; \
+	echo "$(CLI) kb query --text \"$(QUERY)\" $$FLAGS"; \
+	$(CLI) kb query --text "$(QUERY)" $$FLAGS

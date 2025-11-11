@@ -68,19 +68,43 @@ class KbIngestSummary:
     files_discovered: int
     notes_created: int
     units_created: int
+    embedded_units: int
     skipped: int
     errors: list[str]
 
 
-CommandResult = (
-    Union[
-        list["TranscriptionResult"],
-        list[FrameExtractionResult],
-        list["DiarizationResult"],
-        YouTubeFetchResult,
-        KbIngestSummary,
-    ]
-)
+@dataclass(frozen=True)
+class KbEmbedSummary:
+    processed_units: int
+    embedded_units: int
+
+
+@dataclass(frozen=True)
+class KbQueryHit:
+    unit_id: int
+    title: str | None
+    source: str | None
+    text: str
+    created_at: float
+    similarity: float
+    freshness: float
+
+
+@dataclass(frozen=True)
+class KbQuerySummary:
+    query: str
+    hits: list[KbQueryHit]
+
+
+CommandResult = Union[
+    list["TranscriptionResult"],
+    list[FrameExtractionResult],
+    list["DiarizationResult"],
+    YouTubeFetchResult,
+    KbIngestSummary,
+    KbEmbedSummary,
+    KbQuerySummary,
+]
 CommandHandler = Callable[[argparse.Namespace], CommandResult]
 Validator = Callable[[argparse.Namespace], None]
 
@@ -418,6 +442,71 @@ def _configure_kb_parser(parser: argparse.ArgumentParser) -> None:
         default="INFO",
         help="ログレベル (DEBUG/INFO/WARNING/ERROR)",
     )
+    ingest_parser.add_argument(
+        "--auto-embed",
+        dest="kb_auto_embed",
+        action="store_true",
+        help="取り込み直後に埋め込みを計算する（モデル読み込みが発生します）",
+    )
+
+    embed_parser = subparsers.add_parser(
+        "embed",
+        help="埋め込みが未設定のユニットにベクトルを付与する",
+    )
+    embed_parser.add_argument(
+        "--batch-size",
+        dest="kb_embed_batch_size",
+        type=int,
+        default=16,
+        help="エンコード時のバッチサイズ",
+    )
+    embed_parser.add_argument(
+        "--limit",
+        dest="kb_embed_limit",
+        type=int,
+        default=None,
+        help="処理件数の上限（指定しない場合は全件）",
+    )
+
+    query_parser = subparsers.add_parser(
+        "query",
+        help="ナレッジベースに対して検索を実行する",
+    )
+    query_parser.add_argument(
+        "--text",
+        "-t",
+        dest="kb_query_text",
+        required=True,
+        help="検索クエリ",
+    )
+    query_parser.add_argument(
+        "--topn-dense",
+        dest="kb_query_topn",
+        type=int,
+        default=50,
+        help="pgvector の候補数 (top-N)",
+    )
+    query_parser.add_argument(
+        "--topk",
+        dest="kb_query_topk",
+        type=int,
+        default=10,
+        help="MMR 後に残す最終件数",
+    )
+    query_parser.add_argument(
+        "--lambda-mmr",
+        dest="kb_query_lambda",
+        type=float,
+        default=0.5,
+        help="MMR の λ（関連性と多様性のバランス）",
+    )
+    query_parser.add_argument(
+        "--alpha-time",
+        dest="kb_query_alpha_time",
+        type=float,
+        default=0.2,
+        help="時間重み付けの係数 (0=無効)",
+    )
 
 
 def _prepare_asr_runtime(
@@ -547,6 +636,10 @@ def _handle_kb_command(args: argparse.Namespace) -> CommandResult:
     subcommand = getattr(args, "kb_subcommand", None)
     if subcommand == "ingest":
         return _run_kb_ingest(args)
+    if subcommand == "embed":
+        return _run_kb_embed(args)
+    if subcommand == "query":
+        return _run_kb_query(args)
     raise RuntimeError(f"未対応の kb サブコマンドです: {subcommand}")
 
 
@@ -722,12 +815,14 @@ def _run_kb_ingest(args: argparse.Namespace) -> KbIngestSummary:
     pattern = getattr(args, "kb_pattern", None)
     language = getattr(args, "kb_language", DEFAULT_LANGUAGE)
     max_chars = max(int(getattr(args, "kb_max_chars", 1200)), 1)
+    auto_embed = bool(getattr(args, "kb_auto_embed", False))
 
     options = IngestOptions(
         root=path,
         pattern=pattern,
         language=language,
         max_chars=max_chars,
+        auto_embed=auto_embed,
     )
     stats = ingest(options)
     return KbIngestSummary(
@@ -735,9 +830,54 @@ def _run_kb_ingest(args: argparse.Namespace) -> KbIngestSummary:
         files_discovered=stats.files_discovered,
         notes_created=stats.notes_created,
         units_created=stats.units_created,
+        embedded_units=stats.embedded_units,
         skipped=stats.skipped,
         errors=stats.errors,
     )
+
+
+def _run_kb_embed(args: argparse.Namespace) -> KbEmbedSummary:
+    from src.lib.kb.embed import populate_missing_embeddings
+
+    batch_size = max(int(getattr(args, "kb_embed_batch_size", 16)), 1)
+    limit = getattr(args, "kb_embed_limit", None)
+    limit_val = None if limit in (None, "") else int(limit)
+    result = populate_missing_embeddings(batch_size=batch_size, limit=limit_val)
+    return KbEmbedSummary(
+        processed_units=result.processed_units,
+        embedded_units=result.embedded_units,
+    )
+
+
+def _run_kb_query(args: argparse.Namespace) -> KbQuerySummary:
+    from src.lib.kb.query import run_query
+
+    query_text = getattr(args, "kb_query_text")
+    topn = max(int(getattr(args, "kb_query_topn", 50)), 1)
+    topk = max(int(getattr(args, "kb_query_topk", 10)), 1)
+    lam = float(getattr(args, "kb_query_lambda", 0.5))
+    alpha_time = float(getattr(args, "kb_query_alpha_time", 0.2))
+
+    result = run_query(
+        query_text,
+        topn_dense=topn,
+        topk=topk,
+        lam_mmr=lam,
+        alpha_time=alpha_time,
+    )
+    hits = [
+        KbQueryHit(
+            unit_id=hit.unit_id,
+            title=hit.title,
+            source=hit.source,
+            text=hit.text,
+            created_at=hit.created_at.timestamp(),
+            similarity=hit.similarity,
+            freshness=hit.freshness,
+        )
+        for hit in result.hits
+    ]
+    return KbQuerySummary(query=result.query, hits=hits)
 
 
 def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
@@ -910,6 +1050,50 @@ def main(argv: Sequence[str] | None = None) -> None:
         yt_result = cast(YouTubeFetchResult, results)
         print(f"YouTube の説明文を書き出しました: {yt_result.output_path}")
         return
+    if args.command == "kb":
+        kb_sub = getattr(args, "kb_subcommand", None)
+        if kb_sub == "ingest":
+            ingest_summary = cast(KbIngestSummary, results)
+            print("=== KB ingest ===")
+            print(f"対象: {ingest_summary.target}")
+            print(
+                f"検出 {ingest_summary.files_discovered} 件 / "
+                f"登録ノート {ingest_summary.notes_created} 件 / "
+                f"ユニット {ingest_summary.units_created} 件",
+            )
+            if ingest_summary.embedded_units:
+                print(f"埋め込み済みユニット: {ingest_summary.embedded_units} 件")
+            if ingest_summary.skipped:
+                print(f"重複スキップ: {ingest_summary.skipped} 件")
+            if ingest_summary.errors:
+                print("--- エラー ---")
+                for err in ingest_summary.errors:
+                    print(err)
+            return
+        if kb_sub == "embed":
+            embed_summary = cast(KbEmbedSummary, results)
+            print("=== KB embed ===")
+            print(
+                f"処理対象: {embed_summary.processed_units} 件 / "
+                f"埋め込み更新: {embed_summary.embedded_units} 件",
+            )
+            return
+        if kb_sub == "query":
+            query_summary = cast(KbQuerySummary, results)
+            print(f"=== KB query ===\nQ: {query_summary.query}\n")
+            if not query_summary.hits:
+                print("該当するコンテキストは見つかりませんでした。")
+                return
+            for idx, hit in enumerate(query_summary.hits, start=1):
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hit.created_at))
+                print(f"[{idx}] score={hit.similarity:.3f} freshness={hit.freshness:.3f} @ {timestamp}")
+                if hit.title:
+                    print(f"    タイトル: {hit.title}")
+                if hit.source:
+                    print(f"    ソース: {hit.source}")
+                print(f"    本文: {hit.text[:200]}")
+                print()
+            return
     if args.command == "frames":
         for extraction in results:  # type: ignore[assignment]
             print("=== 動画:", extraction.video)
