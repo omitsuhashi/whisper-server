@@ -69,6 +69,9 @@ def create_app() -> FastAPI:
         topk: int = 10
         lambda_mmr: float = 0.5
         alpha_time: float = 0.2
+        use_hyde: bool = True
+        use_rerank: bool = True
+        rerank_topk: int = 5
 
     class KbQueryHit(BaseModel):
         unit_id: int
@@ -78,10 +81,12 @@ def create_app() -> FastAPI:
         created_at: str
         similarity: float
         freshness: float
+        rerank_score: Optional[float] = None
 
     class KbQueryResponse(BaseModel):
         query: str
         hits: list[KbQueryHit]
+        hyde_text: Optional[str] = None
 
     @app.get("/healthz")
     async def health_check() -> dict[str, str]:
@@ -294,6 +299,9 @@ def create_app() -> FastAPI:
             topk=topk,
             lam_mmr=float(payload.lambda_mmr),
             alpha_time=float(payload.alpha_time),
+            use_hyde=payload.use_hyde,
+            use_rerank=payload.use_rerank,
+            rerank_topk=max(int(payload.rerank_topk), 1),
         )
         hits = [
             KbQueryHit(
@@ -304,10 +312,11 @@ def create_app() -> FastAPI:
                 created_at=hit.created_at.isoformat(),
                 similarity=hit.similarity,
                 freshness=hit.freshness,
+                rerank_score=hit.rerank_score,
             )
             for hit in result.hits
         ]
-        return KbQueryResponse(query=result.query, hits=hits)
+        return KbQueryResponse(query=result.query, hits=hits, hyde_text=result.hyde_text)
 
     return app
 app = create_app()

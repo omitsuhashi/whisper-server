@@ -88,12 +88,14 @@ class KbQueryHit:
     created_at: float
     similarity: float
     freshness: float
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True)
 class KbQuerySummary:
     query: str
     hits: list[KbQueryHit]
+    hyde_text: str | None = None
 
 
 CommandResult = Union[
@@ -507,6 +509,25 @@ def _configure_kb_parser(parser: argparse.ArgumentParser) -> None:
         default=0.2,
         help="時間重み付けの係数 (0=無効)",
     )
+    query_parser.add_argument(
+        "--disable-hyde",
+        dest="kb_query_disable_hyde",
+        action="store_true",
+        help="HyDE 仮説生成を無効化する",
+    )
+    query_parser.add_argument(
+        "--disable-rerank",
+        dest="kb_query_disable_rerank",
+        action="store_true",
+        help="Cross-Encoder による再ランキングを無効化する",
+    )
+    query_parser.add_argument(
+        "--rerank-topk",
+        dest="kb_query_rerank_topk",
+        type=int,
+        default=5,
+        help="再ランキング後に残す件数",
+    )
 
 
 def _prepare_asr_runtime(
@@ -857,6 +878,9 @@ def _run_kb_query(args: argparse.Namespace) -> KbQuerySummary:
     topk = max(int(getattr(args, "kb_query_topk", 10)), 1)
     lam = float(getattr(args, "kb_query_lambda", 0.5))
     alpha_time = float(getattr(args, "kb_query_alpha_time", 0.2))
+    use_hyde = not bool(getattr(args, "kb_query_disable_hyde", False))
+    use_rerank = not bool(getattr(args, "kb_query_disable_rerank", False))
+    rerank_topk = max(int(getattr(args, "kb_query_rerank_topk", 5)), 1)
 
     result = run_query(
         query_text,
@@ -864,6 +888,9 @@ def _run_kb_query(args: argparse.Namespace) -> KbQuerySummary:
         topk=topk,
         lam_mmr=lam,
         alpha_time=alpha_time,
+        use_hyde=use_hyde,
+        use_rerank=use_rerank,
+        rerank_topk=rerank_topk,
     )
     hits = [
         KbQueryHit(
@@ -874,10 +901,11 @@ def _run_kb_query(args: argparse.Namespace) -> KbQuerySummary:
             created_at=hit.created_at.timestamp(),
             similarity=hit.similarity,
             freshness=hit.freshness,
+            rerank_score=hit.rerank_score,
         )
         for hit in result.hits
     ]
-    return KbQuerySummary(query=result.query, hits=hits)
+    return KbQuerySummary(query=result.query, hits=hits, hyde_text=result.hyde_text)
 
 
 def _extract_frames(args: argparse.Namespace) -> list[FrameExtractionResult]:
@@ -1081,12 +1109,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         if kb_sub == "query":
             query_summary = cast(KbQuerySummary, results)
             print(f"=== KB query ===\nQ: {query_summary.query}\n")
+            if query_summary.hyde_text:
+                hyde_preview = query_summary.hyde_text.strip()
+                if len(hyde_preview) > 400:
+                    hyde_preview = f"{hyde_preview[:400]}..."
+                print("HyDE 仮説文:")
+                print(hyde_preview)
+                print()
             if not query_summary.hits:
                 print("該当するコンテキストは見つかりませんでした。")
                 return
             for idx, hit in enumerate(query_summary.hits, start=1):
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(hit.created_at))
-                print(f"[{idx}] score={hit.similarity:.3f} freshness={hit.freshness:.3f} @ {timestamp}")
+                base = f"[{idx}] score={hit.similarity:.3f} freshness={hit.freshness:.3f}"
+                if hit.rerank_score is not None:
+                    base += f" rerank={hit.rerank_score:.3f}"
+                print(f"{base} @ {timestamp}")
                 if hit.title:
                     print(f"    タイトル: {hit.title}")
                 if hit.source:

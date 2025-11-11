@@ -21,6 +21,7 @@ class RetrievedUnit:
     created_at: datetime
     similarity: float
     freshness: float
+    rerank_score: float | None = None
 
 
 def _mmr(doc_vecs: np.ndarray, query_vec: np.ndarray, lam: float, topk: int) -> list[int]:
@@ -55,13 +56,14 @@ def hybrid_search(
     topk: int = 10,
     lam_mmr: float = 0.5,
     alpha_time: float = 0.2,
+    query_embedding: np.ndarray | None = None,
 ) -> list[RetrievedUnit]:
     """pgvector で候補取得→MMR→時間重みで再スコアリングする。"""
 
     if topn_dense <= 0 or topk <= 0:
         return []
 
-    query_vec = encode_queries([query])[0]
+    query_vec = query_embedding if query_embedding is not None else encode_queries([query])[0]
     with session_scope() as session:
         rows = session.execute(
             sql_text(

@@ -33,4 +33,5 @@ dependencies = [
     "numpy>=1.26",
     "transformers>=4.44",
     "sentence-transformers>=3.0.1",
+    "litellm>=1.43.0",
 ]
