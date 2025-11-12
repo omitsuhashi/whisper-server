@@ -35,7 +35,7 @@ from src.lib.youtube import YouTubeDescriptionFetcher
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.lib.asr import TranscriptionResult
-    from src.lib.diarize import DiarizationResult, SpeakerAnnotatedTranscript
+    from src.lib.diarize import DiarizationResult
 
 STREAM_DEFAULT_CHUNK = 16_384  # 16 KB
 YOUTUBE_DEFAULT_OUTPUT = "youtube_descriptions.json"
@@ -760,7 +760,8 @@ def run_cli(
 ):
     """コマンド引数を受け取り、書き起こし処理を実行する。"""
 
-    setup_logging(args.log_level)
+    log_level = getattr(args, "log_level", "INFO")
+    setup_logging(log_level)
     ensure_memory_watchdog()
 
     command = args.command or "files"

@@ -12,8 +12,8 @@ from transformers import AutoModel, AutoTokenizer
 from src.lib.kb.db import session_scope
 from src.lib.kb.models import Unit
 
-DEFAULT_MODEL_NAME = os.getenv("KB_EMBED_MODEL", "intfloat/e5-base-v2")
-MAX_LENGTH = int(os.getenv("KB_EMBED_MAX_LENGTH", "512"))
+DEFAULT_MODEL_NAME = os.getenv("KB_EMBED_MODEL", "mlx-community/embeddinggemma-300m")
+MAX_LENGTH = int(os.getenv("KB_EMBED_MAX_LENGTH", "768"))
 BATCH_SIZE = int(os.getenv("KB_EMBED_BATCH_SIZE", "16"))
 
 _tokenizer: AutoTokenizer | None = None
