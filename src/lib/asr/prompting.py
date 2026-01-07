@@ -62,14 +62,14 @@ def build_initial_prompt(context: PromptContext, *, token_limit: int = PROMPT_TO
         lines.append(style)
     if products:
         lines.append(f"製品・サービス: {products}")
-    if terms:
-        lines.append(f"用語: {terms}")
-    if dictionary:
-        lines.append(f"辞書: {dictionary}")
     if agenda:
         lines.append(f"議題: {agenda}")
     if participants:
         lines.append(f"参加者: {participants}")
+    if terms:
+        lines.append(f"重要語彙: {terms}")
+    if dictionary:
+        lines.append(f"表記固定: {dictionary}")
     if not lines:
         return None
 
@@ -82,7 +82,7 @@ def _truncate_prompt(prompt: str, token_limit: int) -> str:
     if len(prompt) <= max_chars:
         return prompt
     # 単語/読点単位で落としてから最終的に安全な長さへ丸める。
-    clauses = re.split(r"(。|、|,)", prompt)
+    clauses = re.split(r"([。、,])", prompt)
     rebuilt: list[str] = []
     length = 0
     for clause in clauses:

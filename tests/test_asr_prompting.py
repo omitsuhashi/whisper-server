@@ -22,11 +22,15 @@ class PromptingTests(unittest.TestCase):
             participants=["田中太郎"],
             products=["Awesome API"],
             style_guidance="英数字は半角。",
+            terms=["Azure OpenAI", "社内ツールX"],
+            dictionary=["Project X", "AI-OPS"],
         )
         prompt = build_initial_prompt(ctx)
         self.assertIn("議題: 品質レビュー", prompt)
         self.assertIn("参加者: 田中太郎", prompt)
         self.assertIn("製品・サービス: Awesome API", prompt)
+        self.assertIn("重要語彙: Azure OpenAI, 社内ツールX", prompt)
+        self.assertIn("表記固定: Project X, AI-OPS", prompt)
         self.assertTrue(prompt.startswith("英数字は半角。"))
 
     def test_build_initial_prompt_truncates_long_text(self) -> None:
@@ -44,15 +48,15 @@ class PromptingTests(unittest.TestCase):
             agenda="改善,品質",
             participants="田中,佐藤",
             products="Project X",
-            terms="用語A,用語B",
-            dictionary="辞書A=AA,辞書B=BB",
             style="常に敬体。",
+            terms="固有名詞A/固有名詞B\n固有名詞C",
+            dictionary="AI-OPS,Project X",
             token_limit=50,
         )
         self.assertIn("議題: 改善, 品質", prompt)
         self.assertIn("参加者: 田中, 佐藤", prompt)
-        self.assertIn("用語: 用語A, 用語B", prompt)
-        self.assertIn("辞書: 辞書A=AA, 辞書B=BB", prompt)
+        self.assertIn("重要語彙: 固有名詞A, 固有名詞B, 固有名詞C", prompt)
+        self.assertIn("表記固定: AI-OPS, Project X", prompt)
 
 
 if __name__ == "__main__":  # pragma: no cover
