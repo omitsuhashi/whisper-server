@@ -75,6 +75,11 @@ def _generate_silent_wav_bytes(duration_sec: float = 0.1) -> bytes:
     return buffer.getvalue()
 
 
+def _generate_pcm_bytes(samples: int = 200) -> bytes:
+    payload = np.zeros(samples, dtype=np.int16)
+    return payload.tobytes()
+
+
 class FakeStdin(types.SimpleNamespace):
     def __init__(self, data: bytes):
         super().__init__(buffer=_FakeBuffer(data))
@@ -433,6 +438,56 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(len(list(args[0])), 2)
         self.assertEqual(kwargs["language"], "ja")
         self.assertIsNone(kwargs.get("decode_options"))
+
+
+class HttpRestPcmTests(unittest.TestCase):
+    @mock.patch.dict("os.environ", {"ASR_OVERLAP_SECONDS": "1.0"})
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_default_overlap_when_missing(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(filename="audio.pcm", text="ok", segments=[])
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+            data={"chunk_seconds": "5"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_transcribe_chunked.assert_called_once()
+        _, kwargs = mock_transcribe_chunked.call_args
+        self.assertEqual(kwargs["chunk_seconds"], 5.0)
+        self.assertEqual(kwargs["overlap_seconds"], 1.0)
+
+    @mock.patch.dict(
+        "os.environ",
+        {"ASR_CHUNK_SECONDS": "4.0", "ASR_OVERLAP_SECONDS": "1.0"},
+    )
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_uses_env_chunk_when_missing(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(filename="audio.pcm", text="ok", segments=[])
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_transcribe_chunked.assert_called_once()
+        _, kwargs = mock_transcribe_chunked.call_args
+        self.assertEqual(kwargs["chunk_seconds"], 4.0)
+        self.assertEqual(kwargs["overlap_seconds"], 1.0)
 
 
 if __name__ == "__main__":  # pragma: no cover
