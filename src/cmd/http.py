@@ -33,6 +33,26 @@ from src.lib.asr.subproc import transcribe_paths_via_worker
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CHUNK_SECONDS = 25.0
+DEFAULT_OVERLAP_SECONDS = 1.0
+
+
+def _resolve_float(raw: Optional[str], fallback: float) -> float:
+    if raw is None:
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        return fallback
+
+
+def _resolve_overlap_seconds(overlap_seconds: Optional[float], *, chunk_seconds: float) -> float:
+    env_overlap = _resolve_float(os.getenv("ASR_OVERLAP_SECONDS"), DEFAULT_OVERLAP_SECONDS)
+    effective_overlap = float(overlap_seconds) if overlap_seconds is not None else env_overlap
+    if chunk_seconds <= 0:
+        return 0.0
+    return max(0.0, min(effective_overlap, chunk_seconds / 2))
+
 
 def create_app() -> FastAPI:
     """FastAPIアプリケーションを構築して返す。"""
@@ -114,28 +134,9 @@ def create_app() -> FastAPI:
                 decode_options["initial_prompt"] = prompt_value
 
             # チャンクとオーバーラップ秒の解決: フォーム値 > 環境変数 > 既定
-            import os as _os
-
-            default_chunk = 25.0
-            default_overlap = 1.0
-
-            def _resolve_float(raw: Optional[str], fallback: float) -> float:
-                if raw is None:
-                    return fallback
-                try:
-                    return float(raw)
-                except ValueError:
-                    return fallback
-
-            env_chunk = _resolve_float(_os.getenv("ASR_CHUNK_SECONDS"), default_chunk)
-            env_overlap = _resolve_float(_os.getenv("ASR_OVERLAP_SECONDS"), default_overlap)
-
+            env_chunk = _resolve_float(os.getenv("ASR_CHUNK_SECONDS"), DEFAULT_CHUNK_SECONDS)
             effective_chunk = float(chunk_seconds) if chunk_seconds is not None else env_chunk
-            effective_overlap = float(overlap_seconds) if overlap_seconds is not None else env_overlap
-            if effective_chunk <= 0:
-                effective_overlap = 0.0
-            else:
-                effective_overlap = max(0.0, min(effective_overlap, effective_chunk / 2))
+            effective_overlap = _resolve_overlap_seconds(overlap_seconds, chunk_seconds=effective_chunk)
 
             logger.debug(
                 "transcribe_chunking: chunk_seconds=%s overlap_seconds=%s",
@@ -145,7 +146,7 @@ def create_app() -> FastAPI:
 
             transcribe_all_fn = None
 
-            if _os.getenv("ASR_HTTP_SUBPROCESS", "1").lower() in {"1", "true", "on", "yes"}:
+            if os.getenv("ASR_HTTP_SUBPROCESS", "1").lower() in {"1", "true", "on", "yes"}:
 
                 def _transcribe_subprocess(paths, *, model_name, language, task, **decode_kwargs):
                     return transcribe_paths_via_worker(
@@ -283,7 +284,7 @@ def create_app() -> FastAPI:
         )
         try:
             effective_chunk = float(chunk_seconds) if chunk_seconds is not None else 0.0
-            effective_overlap = float(overlap_seconds) if overlap_seconds is not None else 0.0
+            effective_overlap = _resolve_overlap_seconds(overlap_seconds, chunk_seconds=effective_chunk)
             if effective_chunk > 0:
                 result = await asyncio.to_thread(
                     transcribe_waveform_chunked,
