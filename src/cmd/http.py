@@ -53,6 +53,8 @@ def create_app() -> FastAPI:
         prompt_participants: Optional[str] = Form(None),
         prompt_products: Optional[str] = Form(None),
         prompt_style: Optional[str] = Form(None),
+        prompt_terms: Optional[str] = Form(None),
+        prompt_dictionary: Optional[str] = Form(None),
     ) -> list[TranscriptionResult]:
         """アップロードされた音声群を書き起こして返す。"""
 
@@ -99,6 +101,8 @@ def create_app() -> FastAPI:
                 participants=prompt_participants,
                 products=prompt_products,
                 style=prompt_style,
+                terms=prompt_terms,
+                dictionary=prompt_dictionary,
             )
             if prompt_value:
                 decode_options["initial_prompt"] = prompt_value
