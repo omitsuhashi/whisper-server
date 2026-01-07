@@ -283,7 +283,8 @@ def create_app() -> FastAPI:
             decode_options=decode_options,
         )
         try:
-            effective_chunk = float(chunk_seconds) if chunk_seconds is not None else 0.0
+            env_chunk = _resolve_float(os.getenv("ASR_CHUNK_SECONDS"), DEFAULT_CHUNK_SECONDS)
+            effective_chunk = float(chunk_seconds) if chunk_seconds is not None else env_chunk
             effective_overlap = _resolve_overlap_seconds(overlap_seconds, chunk_seconds=effective_chunk)
             if effective_chunk > 0:
                 result = await asyncio.to_thread(

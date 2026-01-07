@@ -464,6 +464,31 @@ class HttpRestPcmTests(unittest.TestCase):
         self.assertEqual(kwargs["chunk_seconds"], 5.0)
         self.assertEqual(kwargs["overlap_seconds"], 1.0)
 
+    @mock.patch.dict(
+        "os.environ",
+        {"ASR_CHUNK_SECONDS": "4.0", "ASR_OVERLAP_SECONDS": "1.0"},
+    )
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_uses_env_chunk_when_missing(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(filename="audio.pcm", text="ok", segments=[])
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_transcribe_chunked.assert_called_once()
+        _, kwargs = mock_transcribe_chunked.call_args
+        self.assertEqual(kwargs["chunk_seconds"], 4.0)
+        self.assertEqual(kwargs["overlap_seconds"], 1.0)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
