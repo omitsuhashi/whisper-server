@@ -26,6 +26,17 @@ class AudioUtilsTests(unittest.TestCase):
         expected = np.array([-1.0, 0.0, 32767.0 / 32768.0], dtype=np.float32)
         np.testing.assert_allclose(waveform, expected, rtol=1e-5, atol=1e-6)
 
+    def test_decode_pcm_s16le_bytes_resamples_when_requested(self) -> None:
+        pcm = np.array([0, 1000, 2000, 3000], dtype=np.int16).tobytes()
+        waveform = decode_pcm_s16le_bytes(
+            pcm,
+            sample_rate=4,
+            target_sample_rate=8,
+        )
+        self.assertEqual(waveform.shape[0], 8)
+        self.assertAlmostEqual(waveform[0], 0.0, places=6)
+        self.assertAlmostEqual(waveform[-1], 3000.0 / 32768.0, places=6)
+
     def test_decode_pcm_s16le_bytes_rejects_odd_length(self) -> None:
         with self.assertRaises(AudioDecodeError) as ctx:
             decode_pcm_s16le_bytes(b"\x00", sample_rate=16000)

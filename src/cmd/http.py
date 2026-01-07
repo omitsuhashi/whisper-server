@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Optional, Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
+from mlx_whisper.audio import SAMPLE_RATE
+
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
@@ -237,7 +239,11 @@ def create_app() -> FastAPI:
 
         pcm_bytes = await file.read()
         try:
-            waveform = decode_pcm_s16le_bytes(pcm_bytes, sample_rate=int(sample_rate))
+            waveform = decode_pcm_s16le_bytes(
+                pcm_bytes,
+                sample_rate=int(sample_rate),
+                target_sample_rate=SAMPLE_RATE,
+            )
         except AudioDecodeError as exc:
             if exc.kind == "empty-input":
                 detail = "音声データが空でした。"
