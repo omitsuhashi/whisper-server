@@ -114,6 +114,49 @@ class TestWaveformChunking(unittest.TestCase):
         self.assertEqual(result.segments, [])
         mock_detect.assert_called_once()
 
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])
+    @mock.patch("src.lib.asr.chunking._is_waveform_silent", return_value=False)
+    @mock.patch("src.lib.asr.chunking._transcribe_single")
+    @mock.patch("src.lib.asr.chunking.encode_waveform_to_wav_bytes")
+    def test_chunked_waveform_avoids_encode_when_no_bytes_fn(
+        self,
+        mock_encode: mock.Mock,
+        mock_transcribe_single: mock.Mock,
+        mock_silent: mock.Mock,
+        mock_detect: mock.Mock,
+    ) -> None:
+        mock_transcribe_single.side_effect = [
+            TranscriptionResult(
+                filename="pcm#chunk1",
+                text="A",
+                language="ja",
+                segments=[TranscriptionSegment(start=0.0, end=0.4, text="A")],
+            ),
+            TranscriptionResult(
+                filename="pcm#chunk2",
+                text="B",
+                language="ja",
+                segments=[TranscriptionSegment(start=0.0, end=0.4, text="B")],
+            ),
+        ]
+
+        wave = np.zeros(16000 * 2, dtype=np.float32)
+        options = TranscribeOptions(model_name="demo", language="ja", task=None)
+        result = transcribe_waveform_chunked(
+            wave,
+            options=options,
+            name="pcm",
+            chunk_seconds=1.0,
+            overlap_seconds=0.0,
+        )
+
+        self.assertEqual(result.text, "AB")
+        self.assertEqual(len(result.segments), 2)
+        mock_encode.assert_not_called()
+        mock_transcribe_single.assert_called()
+        mock_silent.assert_called()
+        mock_detect.assert_called_once()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
