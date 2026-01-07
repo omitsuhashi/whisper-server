@@ -116,6 +116,39 @@ def transcribe_streams(
     return results
 
 
+def transcribe_waveform(
+    waveform: np.ndarray,
+    *,
+    options: TranscribeOptions,
+    name: str,
+) -> TranscriptionResult:
+    """Waveform を直接書き起こす。"""
+
+    display_name = name or "waveform"
+    logger.debug(
+        "waveformを書き起こし中: %s (model=%s language=%s task=%s)",
+        display_name,
+        options.model_name,
+        options.language,
+        options.task,
+    )
+
+    transcribe_kwargs = options.build_transcribe_kwargs()
+    if _is_waveform_silent(waveform):
+        logger.info("silence_detected: %s", display_name)
+        return _build_silence_result(
+            display_name=display_name,
+            language=options.language,
+        )
+    return _transcribe_single(
+        audio_input=waveform,
+        display_name=display_name,
+        model_name=options.model_name,
+        transcribe_kwargs=transcribe_kwargs,
+        language_hint=options.language,
+    )
+
+
 def _transcribe_single(
     *,
     audio_input: Any,
@@ -267,4 +300,5 @@ def _has_repeated_segments(segments: Sequence[Any], *, min_repeats: int = 3) -> 
 __all__ = [
     "transcribe_paths",
     "transcribe_streams",
+    "transcribe_waveform",
 ]

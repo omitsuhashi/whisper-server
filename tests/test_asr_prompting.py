@@ -44,11 +44,15 @@ class PromptingTests(unittest.TestCase):
             agenda="改善,品質",
             participants="田中,佐藤",
             products="Project X",
+            terms="用語A,用語B",
+            dictionary="辞書A=AA,辞書B=BB",
             style="常に敬体。",
             token_limit=50,
         )
         self.assertIn("議題: 改善, 品質", prompt)
         self.assertIn("参加者: 田中, 佐藤", prompt)
+        self.assertIn("用語: 用語A, 用語B", prompt)
+        self.assertIn("辞書: 辞書A=AA, 辞書B=BB", prompt)
 
 
 if __name__ == "__main__":  # pragma: no cover

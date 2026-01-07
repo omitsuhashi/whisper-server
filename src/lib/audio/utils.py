@@ -77,6 +77,26 @@ def decode_audio_bytes(audio_bytes: bytes, *, sample_rate: int) -> np.ndarray:
     return waveform / 32768.0
 
 
+def decode_pcm_s16le_bytes(pcm_bytes: bytes, *, sample_rate: int) -> np.ndarray:
+    """Decode raw PCM s16le mono into a normalized float32 waveform (-1..1)."""
+
+    if not pcm_bytes:
+        raise AudioDecodeError("empty-input")
+    if len(pcm_bytes) % 2 != 0:
+        raise AudioDecodeError("invalid-length", f"received_bytes={len(pcm_bytes)}")
+
+    logger.debug(
+        "decode_pcm_s16le_bytes: received_bytes=%d sample_rate=%d",
+        len(pcm_bytes),
+        sample_rate,
+    )
+
+    waveform = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if waveform.size == 0:
+        raise AudioDecodeError("empty-output")
+    return waveform / 32768.0
+
+
 def encode_waveform_to_wav_bytes(waveform: np.ndarray, *, sample_rate: int) -> bytes:
     """Encode mono float waveform (-1..1) to 16-bit PCM WAV bytes."""
 
@@ -99,5 +119,6 @@ __all__ = [
     "AudioDecodeError",
     "coerce_to_bytes",
     "decode_audio_bytes",
+    "decode_pcm_s16le_bytes",
     "encode_waveform_to_wav_bytes",
 ]
