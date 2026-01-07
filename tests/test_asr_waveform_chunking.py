@@ -84,6 +84,36 @@ class TestWaveformChunking(unittest.TestCase):
         self.assertAlmostEqual(result.segments[1].start, 1.0, places=3)
         mock_detect.assert_called_once()
 
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])
+    def test_chunk_merge_keeps_zero_duration_for_all_silent_partials(self, mock_detect: mock.Mock) -> None:
+        def fake_transcribe(blobs, *, model_name, language, task, names, **decode_options):
+            return [
+                TranscriptionResult(
+                    filename=name,
+                    text="",
+                    language=language,
+                    duration=0.0,
+                    segments=[],
+                )
+                for name in names
+            ]
+
+        wave = np.zeros(16000 * 2, dtype=np.float32)
+        options = TranscribeOptions(model_name="demo", language="ja", task=None)
+        result = transcribe_waveform_chunked(
+            wave,
+            options=options,
+            name="pcm",
+            chunk_seconds=1.0,
+            overlap_seconds=0.0,
+            transcribe_all_bytes_fn=fake_transcribe,
+        )
+
+        self.assertEqual(result.duration, 0.0)
+        self.assertEqual(result.text, "")
+        self.assertEqual(result.segments, [])
+        mock_detect.assert_called_once()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

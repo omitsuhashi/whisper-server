@@ -103,11 +103,20 @@ def _merge_results(
     duration = segments[-1].end if segments else None
 
     if not segments:
-        fallback_text = "".join(res.text or "" for res in partials).strip()
-        if fallback_text:
-            combined_text = fallback_text
-        if chunk_windows:
-            duration = chunk_windows[-1][3] / float(_SR)
+        all_silent = bool(partials) and all(
+            not (getattr(res, "segments", None) or [])
+            and not (getattr(res, "text", "") or "").strip()
+            and getattr(res, "duration", None) == 0.0
+            for res in partials
+        )
+        if all_silent:
+            duration = 0.0
+        else:
+            fallback_text = "".join(res.text or "" for res in partials).strip()
+            if fallback_text:
+                combined_text = fallback_text
+            if chunk_windows:
+                duration = chunk_windows[-1][3] / float(_SR)
 
     return TranscriptionResult(
         filename=filename,
