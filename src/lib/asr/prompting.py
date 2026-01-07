@@ -22,6 +22,8 @@ class PromptContext:
     participants: Sequence[str] = ()
     products: Sequence[str] = ()
     style_guidance: str | None = None
+    terms: Sequence[str] = ()
+    dictionary: Sequence[str] = ()
 
 
 def normalize_prompt_items(raw: str | Sequence[str] | None) -> list[str]:
@@ -51,6 +53,8 @@ def build_initial_prompt(context: PromptContext, *, token_limit: int = PROMPT_TO
     agenda = ", ".join(context.agenda_items)
     participants = ", ".join(context.participants)
     products = ", ".join(context.products)
+    terms = ", ".join(context.terms)
+    dictionary = ", ".join(context.dictionary)
 
     lines: list[str] = []
     style = (context.style_guidance or _DEFAULT_STYLE_GUIDANCE).strip()
@@ -62,6 +66,10 @@ def build_initial_prompt(context: PromptContext, *, token_limit: int = PROMPT_TO
         lines.append(f"議題: {agenda}")
     if participants:
         lines.append(f"参加者: {participants}")
+    if terms:
+        lines.append(f"重要語彙: {terms}")
+    if dictionary:
+        lines.append(f"表記固定: {dictionary}")
     if not lines:
         return None
 
@@ -97,6 +105,8 @@ def build_prompt_from_metadata(
     participants: str | Sequence[str] | None = None,
     products: str | Sequence[str] | None = None,
     style: str | None = None,
+    terms: str | Sequence[str] | None = None,
+    dictionary: str | Sequence[str] | None = None,
     token_limit: int = PROMPT_TOKEN_LIMIT,
 ) -> str | None:
     """CLI/HTTP から渡された文字列群を正規化して initial_prompt を返す。"""
@@ -104,9 +114,11 @@ def build_prompt_from_metadata(
     agenda_items = normalize_prompt_items(agenda)
     participant_items = normalize_prompt_items(participants)
     product_items = normalize_prompt_items(products)
+    term_items = normalize_prompt_items(terms)
+    dict_items = normalize_prompt_items(dictionary)
 
     style_value = (style or "").strip()
-    if not (agenda_items or participant_items or product_items or style_value):
+    if not (agenda_items or participant_items or product_items or term_items or dict_items or style_value):
         return None
 
     context = PromptContext(
@@ -114,6 +126,8 @@ def build_prompt_from_metadata(
         participants=participant_items,
         products=product_items,
         style_guidance=style_value or None,
+        terms=term_items,
+        dictionary=dict_items,
     )
     return build_initial_prompt(context, token_limit=token_limit)
 
