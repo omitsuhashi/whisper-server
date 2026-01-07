@@ -9,15 +9,21 @@ from pathlib import Path
 from typing import Optional, Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
+from mlx_whisper.audio import SAMPLE_RATE
+
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.asr.chunking import transcribe_paths_chunked
+from src.lib.asr.options import TranscribeOptions
+from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.asr.prompting import build_prompt_from_metadata
 from src.lib.audio import (
+    AudioDecodeError,
     InvalidAudioError,
     PreparedAudio,
+    decode_pcm_s16le_bytes,
     dump_audio_for_debug,
     infer_suffix,
     prepare_audio,
@@ -53,6 +59,8 @@ def create_app() -> FastAPI:
         prompt_participants: Optional[str] = Form(None),
         prompt_products: Optional[str] = Form(None),
         prompt_style: Optional[str] = Form(None),
+        prompt_terms: Optional[str] = Form(None),
+        prompt_dictionary: Optional[str] = Form(None),
     ) -> list[TranscriptionResult]:
         """アップロードされた音声群を書き起こして返す。"""
 
@@ -99,6 +107,8 @@ def create_app() -> FastAPI:
                 participants=prompt_participants,
                 products=prompt_products,
                 style=prompt_style,
+                terms=prompt_terms,
+                dictionary=prompt_dictionary,
             )
             if prompt_value:
                 decode_options["initial_prompt"] = prompt_value
@@ -197,6 +207,99 @@ def create_app() -> FastAPI:
         )
 
         return updated
+
+    @app.post("/transcribe_pcm", response_model=list[TranscriptionResult])
+    async def transcribe_pcm_endpoint(
+        file: UploadFile = File(...),
+        sample_rate: int = Form(16000),
+        model: str = Form(DEFAULT_MODEL_NAME),
+        language: Optional[str] = Form(None),
+        task: Optional[str] = Form(None),
+        prompt_agenda: Optional[str] = Form(None),
+        prompt_participants: Optional[str] = Form(None),
+        prompt_products: Optional[str] = Form(None),
+        prompt_style: Optional[str] = Form(None),
+        prompt_terms: Optional[str] = Form(None),
+        prompt_dictionary: Optional[str] = Form(None),
+    ) -> list[TranscriptionResult]:
+        """PCM(s16le, mono) をそのまま書き起こして返す。"""
+
+        filename = file.filename or "pcm"
+        logger.debug(
+            "transcribe_pcm_request: file=%s model=%s language=%s task=%s sample_rate=%s",
+            filename,
+            model or DEFAULT_MODEL_NAME,
+            language or DEFAULT_LANGUAGE,
+            task,
+            sample_rate,
+        )
+
+        if sample_rate <= 0:
+            raise HTTPException(status_code=400, detail="sample_rate が不正です")
+
+        pcm_bytes = await file.read()
+        try:
+            waveform = decode_pcm_s16le_bytes(
+                pcm_bytes,
+                sample_rate=int(sample_rate),
+                target_sample_rate=SAMPLE_RATE,
+            )
+        except AudioDecodeError as exc:
+            if exc.kind == "empty-input":
+                detail = "音声データが空でした。"
+            elif exc.kind == "empty-output":
+                detail = "音声データのデコード結果が空でした。"
+            elif exc.kind == "invalid-length":
+                detail = "PCM データの長さが不正です。"
+            else:
+                detail = "音声データのデコードに失敗しました。"
+            raise HTTPException(status_code=400, detail=detail) from exc
+
+        model_name_resolved, language_resolved = resolve_model_and_language(
+            model,
+            language,
+            default_model=DEFAULT_MODEL_NAME,
+            default_language=DEFAULT_LANGUAGE,
+        )
+        decode_options: dict[str, Any] = {}
+        prompt_value = build_prompt_from_metadata(
+            agenda=prompt_agenda,
+            participants=prompt_participants,
+            products=prompt_products,
+            style=prompt_style,
+            terms=prompt_terms,
+            dictionary=prompt_dictionary,
+        )
+        if prompt_value:
+            decode_options["initial_prompt"] = prompt_value
+
+        options = TranscribeOptions(
+            model_name=model_name_resolved,
+            language=language_resolved,
+            task=task,
+            decode_options=decode_options,
+        )
+        try:
+            result = await asyncio.to_thread(
+                transcribe_waveform,
+                waveform,
+                options=options,
+                name=filename,
+            )
+        except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
+            logger.exception("書き起こしに失敗しました: %s", filename)
+            raise HTTPException(status_code=500, detail="書き起こしに失敗しました") from exc
+
+        logger.debug(
+            "transcribe_pcm_response: %s",
+            {
+                "filename": result.filename,
+                "segments": len(result.segments),
+                "language": result.language,
+                "duration": result.duration,
+            },
+        )
+        return [result]
 
     return app
 app = create_app()

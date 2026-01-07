@@ -77,6 +77,62 @@ def decode_audio_bytes(audio_bytes: bytes, *, sample_rate: int) -> np.ndarray:
     return waveform / 32768.0
 
 
+def decode_pcm_s16le_bytes(
+    pcm_bytes: bytes,
+    *,
+    sample_rate: int,
+    target_sample_rate: int | None = None,
+) -> np.ndarray:
+    """Decode raw PCM s16le mono into a normalized float32 waveform (-1..1).
+
+    Resamples when target_sample_rate is provided.
+    """
+
+    if not pcm_bytes:
+        raise AudioDecodeError("empty-input")
+    if len(pcm_bytes) % 2 != 0:
+        raise AudioDecodeError("invalid-length", f"received_bytes={len(pcm_bytes)}")
+
+    logger.debug(
+        "decode_pcm_s16le_bytes: received_bytes=%d sample_rate=%d",
+        len(pcm_bytes),
+        sample_rate,
+    )
+
+    waveform = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if waveform.size == 0:
+        raise AudioDecodeError("empty-output")
+    waveform = waveform / 32768.0
+
+    if target_sample_rate is not None and target_sample_rate != sample_rate:
+        waveform = _resample_waveform(
+            waveform,
+            source_rate=sample_rate,
+            target_rate=target_sample_rate,
+        )
+
+    return waveform
+
+
+def _resample_waveform(waveform: np.ndarray, *, source_rate: int, target_rate: int) -> np.ndarray:
+    if source_rate <= 0 or target_rate <= 0:
+        raise AudioDecodeError("invalid-sample-rate")
+    if waveform.size == 0 or source_rate == target_rate:
+        return waveform
+
+    target_length = max(1, int(round(waveform.size * target_rate / source_rate)))
+    logger.debug(
+        "resample_waveform: source_rate=%d target_rate=%d samples=%d->%d",
+        source_rate,
+        target_rate,
+        waveform.size,
+        target_length,
+    )
+    old_indices = np.arange(waveform.size, dtype=np.float32)
+    new_indices = np.linspace(0, waveform.size - 1, num=target_length, dtype=np.float32)
+    return np.interp(new_indices, old_indices, waveform).astype(np.float32)
+
+
 def encode_waveform_to_wav_bytes(waveform: np.ndarray, *, sample_rate: int) -> bytes:
     """Encode mono float waveform (-1..1) to 16-bit PCM WAV bytes."""
 
@@ -99,5 +155,6 @@ __all__ = [
     "AudioDecodeError",
     "coerce_to_bytes",
     "decode_audio_bytes",
+    "decode_pcm_s16le_bytes",
     "encode_waveform_to_wav_bytes",
 ]
