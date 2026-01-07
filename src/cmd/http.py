@@ -14,7 +14,7 @@ from mlx_whisper.audio import SAMPLE_RATE
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
-from src.lib.asr.chunking import transcribe_paths_chunked
+from src.lib.asr.chunking import transcribe_paths_chunked, transcribe_waveform_chunked
 from src.lib.asr.options import TranscribeOptions
 from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
@@ -215,6 +215,8 @@ def create_app() -> FastAPI:
         model: str = Form(DEFAULT_MODEL_NAME),
         language: Optional[str] = Form(None),
         task: Optional[str] = Form(None),
+        chunk_seconds: Optional[float] = Form(None),
+        overlap_seconds: Optional[float] = Form(None),
         prompt_agenda: Optional[str] = Form(None),
         prompt_participants: Optional[str] = Form(None),
         prompt_products: Optional[str] = Form(None),
@@ -280,12 +282,24 @@ def create_app() -> FastAPI:
             decode_options=decode_options,
         )
         try:
-            result = await asyncio.to_thread(
-                transcribe_waveform,
-                waveform,
-                options=options,
-                name=filename,
-            )
+            effective_chunk = float(chunk_seconds) if chunk_seconds is not None else 0.0
+            effective_overlap = float(overlap_seconds) if overlap_seconds is not None else 0.0
+            if effective_chunk > 0:
+                result = await asyncio.to_thread(
+                    transcribe_waveform_chunked,
+                    waveform,
+                    options=options,
+                    name=filename,
+                    chunk_seconds=effective_chunk,
+                    overlap_seconds=effective_overlap,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    transcribe_waveform,
+                    waveform,
+                    options=options,
+                    name=filename,
+                )
         except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
             logger.exception("書き起こしに失敗しました: %s", filename)
             raise HTTPException(status_code=500, detail="書き起こしに失敗しました") from exc
