@@ -3,10 +3,19 @@ from __future__ import annotations
 import logging
 import os
 
+from src.lib.diagnostics.request_context import get_request_id, get_session_id
+
 _LEVEL_ALIASES: dict[str, int] = {
     "WARN": logging.WARNING,
     "TRACE": logging.DEBUG,
 }
+
+
+class RequestContextFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = get_request_id()
+        record.session_id = get_session_id()
+        return True
 
 
 def _normalize(value: str | int | None) -> int:
@@ -51,7 +60,10 @@ def setup_logging(
     default: str | int | None = logging.INFO,
 ) -> int:
     resolved = resolve_log_level(level, os.getenv(env_key), default=default)
-    logging.basicConfig(level=resolved, force=True)
-    logging.getLogger().setLevel(resolved)
+    fmt = os.getenv("LOG_FORMAT") or "%(asctime)s %(levelname)s %(name)s [req=%(request_id)s sess=%(session_id)s] %(message)s"
+    logging.basicConfig(level=resolved, force=True, format=fmt)
+    root = logging.getLogger()
+    root.setLevel(resolved)
+    for handler in root.handlers:
+        handler.addFilter(RequestContextFilter())
     return resolved
-
