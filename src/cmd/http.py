@@ -50,6 +50,12 @@ def _resolve_float(raw: Optional[str], fallback: float) -> float:
         return fallback
 
 
+def _coerce_duration(duration: float | None) -> float:
+    if duration is None:
+        return 0.0
+    return float(duration)
+
+
 def _resolve_overlap_seconds(overlap_seconds: Optional[float], *, chunk_seconds: float) -> float:
     env_overlap = _resolve_float(os.getenv("ASR_OVERLAP_SECONDS"), DEFAULT_OVERLAP_SECONDS)
     effective_overlap = float(overlap_seconds) if overlap_seconds is not None else env_overlap
@@ -313,7 +319,7 @@ def create_app() -> FastAPI:
         asr_ms = int((asr_end - asr_started) * 1000)
         total_ms = int((asr_end - started) * 1000)
         segments_total = sum(len(res.segments) for res in updated)
-        duration_total = sum(float(res.duration) for res in updated)
+        duration_total = sum(_coerce_duration(res.duration) for res in updated)
 
         logger.info(
             "transcribe_done mode=%s files=%d results=%d segments=%d duration_sec=%.3f prep_ms=%d asr_ms=%d total_ms=%d",
@@ -468,7 +474,7 @@ def create_app() -> FastAPI:
             mode,
             result.filename,
             len(result.segments),
-            float(result.duration),
+            _coerce_duration(result.duration),
             prep_ms,
             asr_ms,
             total_ms,

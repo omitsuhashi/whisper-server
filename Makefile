@@ -4,7 +4,7 @@ UVICORN := $(PYTHON) -m uvicorn
 HTTP_HOST ?= 127.0.0.1
 HTTP_PORT ?= 8000
 HTTP_RELOAD ?= 0
-LOG_LEVEL ?= INFO
+LOG_LEVEL ?= DEBUG
 COMPOSE ?= docker compose
 KB_PATH ?= media
 
