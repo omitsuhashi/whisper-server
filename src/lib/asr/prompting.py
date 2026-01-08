@@ -10,7 +10,7 @@ PROMPT_TOKEN_LIMIT = 224
 _APPROX_CHARS_PER_TOKEN = 4
 _DEFAULT_STYLE_GUIDANCE = (
     "英数字は半角、技術用語は英語綴り、句点は「。」読点は「、」。"
-    "箇条書きで要点を短くまとめてください。"
+    "要約せず、話した内容をできるだけそのまま書き起こしてください。"
 )
 
 
