@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 _WS = re.compile(r"\s+")
+_WORDLIKE = re.compile(r"^[A-Za-z0-9_ ]+$")
 
 
 def normalize(text: str) -> str:
@@ -32,5 +33,13 @@ def key_term_accuracy(transcript: str, key_terms: Iterable[str]) -> float:
     if not terms:
         return 1.0
 
-    hits = sum(1 for term in terms if term in transcript_normalized)
+    hits = 0
+    for term in terms:
+        if _WORDLIKE.match(term):
+            pattern = rf"\b{re.escape(term)}\b"
+            if re.search(pattern, transcript_normalized, flags=re.ASCII):
+                hits += 1
+            continue
+        if term in transcript_normalized:
+            hits += 1
     return hits / len(terms)

@@ -63,6 +63,7 @@ def infer_suffix(filename: Optional[str]) -> str:
 
 def prepare_audio(temp_path: Path, original_name: Optional[str]) -> PreparedAudio:
     validate_audio_file(temp_path, original_name)
+    dump_audio_for_debug(temp_path, original_name)
     silent = is_silent_audio(temp_path)
     display_name = original_name or temp_path.name
     return PreparedAudio(path=temp_path, display_name=display_name, silent=silent)

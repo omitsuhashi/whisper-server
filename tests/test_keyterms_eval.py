@@ -11,3 +11,9 @@ class TestKeyTermEval(unittest.TestCase):
         self.assertAlmostEqual(
             key_term_accuracy("git checkout", ["git", "checkout", "dev"]), 2 / 3
         )
+
+    def test_kta_word_boundary(self) -> None:
+        self.assertEqual(key_term_accuracy("device", ["dev"]), 0.0)
+
+    def test_kta_phrase_boundary(self) -> None:
+        self.assertEqual(key_term_accuracy("git checkout dev", ["git checkout"]), 1.0)
