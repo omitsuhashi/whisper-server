@@ -16,15 +16,25 @@ def main() -> int:
     parser.add_argument("--jsonl", required=True)
     parser.add_argument("--prompt_terms", default="")
     parser.add_argument("--prompt_dictionary", default="")
+    parser.add_argument("--prompt_agenda", default="")
+    parser.add_argument("--prompt_participants", default="")
+    parser.add_argument("--prompt_products", default="")
+    parser.add_argument("--prompt_style", default="")
+    parser.add_argument("--chunk_seconds", type=float, default=None)
+    parser.add_argument("--overlap_seconds", type=float, default=None)
+    parser.add_argument("--mode", default="")
     args = parser.parse_args()
 
     total = 0
     acc_sum = 0.0
-    for line in Path(args.jsonl).read_text(encoding="utf-8").splitlines():
+    jsonl_path = Path(args.jsonl)
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
-        audio_path = Path(row["audio_path"])
+        audio_path = Path(row["audio_path"]).expanduser()
+        if not audio_path.is_absolute():
+            audio_path = (jsonl_path.parent / audio_path).resolve()
         key_terms = row.get("key_terms") or []
 
         files = {
@@ -35,11 +45,27 @@ def main() -> int:
             data["prompt_terms"] = args.prompt_terms
         if args.prompt_dictionary:
             data["prompt_dictionary"] = args.prompt_dictionary
+        if args.prompt_agenda:
+            data["prompt_agenda"] = args.prompt_agenda
+        if args.prompt_participants:
+            data["prompt_participants"] = args.prompt_participants
+        if args.prompt_products:
+            data["prompt_products"] = args.prompt_products
+        if args.prompt_style:
+            data["prompt_style"] = args.prompt_style
+        if args.chunk_seconds is not None:
+            data["chunk_seconds"] = str(args.chunk_seconds)
+        if args.overlap_seconds is not None:
+            data["overlap_seconds"] = str(args.overlap_seconds)
+        headers = {}
+        if args.mode:
+            headers["X-Whisper-Mode"] = args.mode
 
         response = requests.post(
             f"{args.server}/transcribe",
             files=files,
             data=data,
+            headers=headers,
             timeout=600,
         )
         response.raise_for_status()
