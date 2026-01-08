@@ -118,8 +118,6 @@ def build_prompt_from_metadata(
     dictionary_items = normalize_prompt_items(dictionary)
 
     style_value = (style or "").strip()
-    if not (agenda_items or participant_items or product_items or terms_items or dictionary_items or style_value):
-        return None
 
     context = PromptContext(
         agenda_items=agenda_items,

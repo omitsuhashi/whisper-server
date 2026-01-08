@@ -40,8 +40,10 @@ class PromptingTests(unittest.TestCase):
         prompt = build_initial_prompt(ctx, token_limit=10)
         self.assertLessEqual(len(prompt), 10 * 4)
 
-    def test_build_prompt_from_metadata_skips_empty_payload(self) -> None:
-        self.assertIsNone(build_prompt_from_metadata())
+    def test_build_prompt_from_metadata_returns_default_prompt_when_empty(self) -> None:
+        prompt = build_prompt_from_metadata()
+        self.assertTrue(prompt)
+        self.assertIn("句点は「。」読点は「、」", prompt)
 
     def test_build_prompt_from_metadata_accepts_strings(self) -> None:
         prompt = build_prompt_from_metadata(
