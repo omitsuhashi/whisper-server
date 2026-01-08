@@ -21,7 +21,12 @@ from src.lib.asr.chunking import transcribe_paths_chunked, transcribe_waveform_c
 from src.lib.asr.options import TranscribeOptions
 from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
-from src.lib.asr.prompting import build_prompt_from_metadata, normalize_prompt_items
+from src.lib.asr.prompting import (
+    PromptContext,
+    build_initial_prompt,
+    build_prompt_from_metadata,
+    normalize_prompt_items,
+)
 from src.lib.audio import (
     AudioDecodeError,
     InvalidAudioError,
@@ -62,6 +67,11 @@ def _resolve_overlap_seconds(overlap_seconds: Optional[float], *, chunk_seconds:
     if chunk_seconds <= 0:
         return 0.0
     return max(0.0, min(effective_overlap, chunk_seconds / 2))
+
+
+def _use_default_style_prompt() -> bool:
+    raw = (os.getenv("ASR_DEFAULT_STYLE_PROMPT", "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,8 @@ def _resolve_transcribe_inputs(
         dictionary=prompt_dictionary,
         language=language_resolved,
     )
+    if not prompt_value and _use_default_style_prompt():
+        prompt_value = build_initial_prompt(PromptContext())
     decode_options = {"initial_prompt": prompt_value} if prompt_value else None
 
     terms_items = normalize_prompt_items(prompt_terms)
