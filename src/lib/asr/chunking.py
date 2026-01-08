@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 ChunkWindow = Tuple[int, int, int, int]
 TranscribeBytesFn = Callable[..., List[TranscriptionResult]]
 _DEFAULT_VAD_CONFIG = VadConfig()
-_MAX_VAD_CHUNK_MULTIPLIER = 2.0  # VAD が過分割した場合のガード
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -181,25 +180,6 @@ def _phase_plan_chunking(
     return _build_chunks(total_samples, chunk_samples, overlap_samples)
 
 
-def _cap_chunk_windows(
-    chunk_windows: Sequence[ChunkWindow],
-    *,
-    total_samples: int,
-    chunk_samples: int,
-    overlap_samples: int,
-) -> List[ChunkWindow]:
-    baseline = _build_chunks(total_samples, chunk_samples, overlap_samples)
-    if not baseline:
-        return list(chunk_windows)
-    if len(chunk_windows) > len(baseline) * _MAX_VAD_CHUNK_MULTIPLIER:
-        logger.warning(
-            "vad_chunk_plan_too_fragmented: total_samples=%d planned=%d baseline=%d",
-            total_samples,
-            len(chunk_windows),
-            len(baseline),
-        )
-        return baseline
-    return list(chunk_windows)
 
 
 def _phase_run_asr(
@@ -216,19 +196,47 @@ def _phase_run_asr(
     """Phase 3 (ASR): チャンク列をエンコードして ASR へ渡す。"""
 
     blobs: List[bytes] = []
-    for raw_start, raw_end, _, _ in chunk_windows:
-        chunk_wave = waveform[raw_start:raw_end]
-        blobs.append(encode_waveform_to_wav_bytes(chunk_wave, sample_rate=_SR))
-
     chunk_names = [f"{filename}#chunk{idx+1}" for idx in range(len(chunk_windows))]
-    return transcribe_fn(
-        blobs,
-        model_name=model_name,
-        language=language,
-        task=task,
-        names=chunk_names,
-        **decode_kwargs,
-    )
+    index_map: List[int] = []
+    partials: List[TranscriptionResult | None] = [None] * len(chunk_windows)
+
+    for idx, (raw_start, raw_end, _, _) in enumerate(chunk_windows):
+        chunk_wave = waveform[raw_start:raw_end]
+        if _is_waveform_silent(chunk_wave):
+            partials[idx] = _build_silence_result(
+                display_name=chunk_names[idx],
+                language=language,
+            )
+            continue
+        blobs.append(encode_waveform_to_wav_bytes(chunk_wave, sample_rate=_SR))
+        index_map.append(idx)
+
+    if blobs:
+        active_names = [chunk_names[idx] for idx in index_map]
+        results = transcribe_fn(
+            blobs,
+            model_name=model_name,
+            language=language,
+            task=task,
+            names=active_names,
+            **decode_kwargs,
+        )
+        for res, idx in zip(results, index_map):
+            name = chunk_names[idx]
+            if hasattr(res, "model_copy"):
+                partials[idx] = res.model_copy(update={"filename": name})
+            else:
+                setattr(res, "filename", name)
+                partials[idx] = res
+
+    for idx, res in enumerate(partials):
+        if res is None:
+            partials[idx] = _build_silence_result(
+                display_name=chunk_names[idx],
+                language=language,
+            )
+
+    return [res for res in partials if res is not None]
 
 
 def _phase_run_asr_waveform(
@@ -316,12 +324,6 @@ def transcribe_waveform_chunked(
     overlap_samples = int(_SR * overlap_seconds)
     segments = _phase_detect_segments(wave, _SR, vad_config=vad_cfg)
     chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
-    chunk_windows = _cap_chunk_windows(
-        chunk_windows,
-        total_samples=total,
-        chunk_samples=chunk_samples,
-        overlap_samples=overlap_samples,
-    )
     if transcribe_all_bytes_fn is not None:
         partials = _phase_run_asr(
             chunk_windows,
@@ -357,10 +359,19 @@ def transcribe_paths_chunked(
 ) -> List[TranscriptionResult]:
     """ファイル入力をチャンク化し、オーバーラップを除去しながら結合する。"""
 
-    fn = transcribe_all_bytes_fn or _default_transcribe_all_bytes
+    use_bytes = transcribe_all_bytes_fn is not None
+    fn = transcribe_all_bytes_fn
     decode_kwargs = dict(decode_options or {})
     vad_cfg = vad_config or _DEFAULT_VAD_CONFIG
     results: List[TranscriptionResult] = []
+    options = None
+    if not use_bytes:
+        options = TranscribeOptions(
+            model_name=model_name,
+            language=language,
+            task=task,
+            decode_options=dict(decode_kwargs),
+        )
 
     chunk_seconds = max(float(chunk_seconds or 0.0), 0.0)
     overlap_seconds = max(float(overlap_seconds or 0.0), 0.0)
@@ -374,43 +385,58 @@ def transcribe_paths_chunked(
         total = int(waveform.shape[-1])
 
         if chunk_seconds <= 0.0 or total <= int(_SR * chunk_seconds):
-            partials = fn(
-                [raw],
-                model_name=model_name,
-                language=language,
-                task=task,
-                names=[path.name],
-                **decode_kwargs,
+            if use_bytes:
+                assert fn is not None
+                partials = fn(
+                    [raw],
+                    model_name=model_name,
+                    language=language,
+                    task=task,
+                    names=[path.name],
+                    **decode_kwargs,
+                )
+                if partials:
+                    res = partials[0]
+                    if hasattr(res, "model_copy"):
+                        res = res.model_copy(update={"filename": path.name})
+                    else:
+                        setattr(res, "filename", path.name)
+                    results.append(res)
+                continue
+            assert options is not None
+            results.append(
+                transcribe_waveform(
+                    waveform,
+                    options=options,
+                    name=path.name,
+                )
             )
-            if partials:
-                res = partials[0]
-                if hasattr(res, "model_copy"):
-                    res = res.model_copy(update={"filename": path.name})
-                else:
-                    setattr(res, "filename", path.name)
-                results.append(res)
             continue
 
         chunk_samples = max(int(_SR * chunk_seconds), 1)
         overlap_samples = int(_SR * overlap_seconds)
         segments = _phase_detect_segments(waveform, _SR, vad_config=vad_cfg)
         chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
-        chunk_windows = _cap_chunk_windows(
-            chunk_windows,
-            total_samples=total,
-            chunk_samples=chunk_samples,
-            overlap_samples=overlap_samples,
-        )
-        partials = _phase_run_asr(
-            chunk_windows,
-            waveform,
-            filename=path.name,
-            transcribe_fn=fn,
-            model_name=model_name,
-            language=language,
-            task=task,
-            decode_kwargs=decode_kwargs,
-        )
+        if use_bytes:
+            assert fn is not None
+            partials = _phase_run_asr(
+                chunk_windows,
+                waveform,
+                filename=path.name,
+                transcribe_fn=fn,
+                model_name=model_name,
+                language=language,
+                task=task,
+                decode_kwargs=decode_kwargs,
+            )
+        else:
+            assert options is not None
+            partials = _phase_run_asr_waveform(
+                chunk_windows,
+                waveform,
+                filename=path.name,
+                options=options,
+            )
         merged = _merge_results(partials, chunk_windows=chunk_windows, filename=path.name, language=language)
         results.append(merged)
 

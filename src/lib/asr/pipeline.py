@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence
 
@@ -217,7 +218,21 @@ def _translate_decode_error(exc: AudioDecodeError) -> RuntimeError:
     return RuntimeError("音声データのデコードに失敗しました。")
 
 
-def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 2e-4) -> bool:
+def _resolve_silence_threshold(fallback: float) -> float:
+    raw = os.getenv("ASR_SILENCE_THRESHOLD")
+    if raw is None:
+        return fallback
+    try:
+        value = float(raw)
+    except ValueError:
+        return fallback
+    if not np.isfinite(value) or value <= 0:
+        return fallback
+    return value
+
+
+def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 5e-4) -> bool:
+    threshold = _resolve_silence_threshold(threshold)
     if waveform.size == 0:
         return True
     energy = float(np.mean(np.abs(waveform)))
