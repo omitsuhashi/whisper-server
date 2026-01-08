@@ -104,6 +104,7 @@ def _resolve_transcribe_inputs(
         style=prompt_style,
         terms=prompt_terms,
         dictionary=prompt_dictionary,
+        language=language_resolved,
     )
     decode_options = {"initial_prompt": prompt_value} if prompt_value else None
 
