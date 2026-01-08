@@ -26,7 +26,7 @@ class TestWaveformChunking(unittest.TestCase):
                 for name in names
             ]
 
-        wave = np.zeros(16000 * 2, dtype=np.float32)
+        wave = np.full(16000 * 2, 0.01, dtype=np.float32)
         options = TranscribeOptions(
             model_name="demo",
             language="ja",
@@ -67,7 +67,7 @@ class TestWaveformChunking(unittest.TestCase):
                 )
             return results
 
-        wave = np.zeros(16000 * 2, dtype=np.float32)
+        wave = np.full(16000 * 2, 0.01, dtype=np.float32)
         options = TranscribeOptions(model_name="demo", language="ja", task=None)
         result = transcribe_waveform_chunked(
             wave,
@@ -112,6 +112,43 @@ class TestWaveformChunking(unittest.TestCase):
         self.assertEqual(result.duration, 0.0)
         self.assertEqual(result.text, "")
         self.assertEqual(result.segments, [])
+        mock_detect.assert_called_once()
+
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])
+    def test_bytes_path_skips_silent_chunks(self, mock_detect: mock.Mock) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_transcribe(blobs, *, model_name, language, task, names, **decode_options):
+            captured["blobs"] = list(blobs)
+            captured["names"] = list(names)
+            return [
+                TranscriptionResult(
+                    filename=names[0],
+                    text="B",
+                    language=language,
+                    segments=[TranscriptionSegment(start=0.0, end=0.4, text="B")],
+                )
+            ]
+
+        wave = np.concatenate(
+            [
+                np.zeros(16000, dtype=np.float32),
+                np.full(16000, 0.01, dtype=np.float32),
+            ]
+        )
+        options = TranscribeOptions(model_name="demo", language="ja", task=None)
+        result = transcribe_waveform_chunked(
+            wave,
+            options=options,
+            name="pcm",
+            chunk_seconds=1.0,
+            overlap_seconds=0.0,
+            transcribe_all_bytes_fn=fake_transcribe,
+        )
+
+        self.assertEqual(result.text, "B")
+        self.assertEqual(captured.get("names"), ["pcm#chunk2"])
+        self.assertEqual(len(captured.get("blobs", [])), 1)
         mock_detect.assert_called_once()
 
     @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])

@@ -108,8 +108,6 @@ def create_app() -> FastAPI:
                     dump_audio_for_debug(tmp_path, upload.filename)
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-                dump_audio_for_debug(tmp_path, upload.filename)
-
                 if prepared.silent:
                     logger.info("transcribe_silence_detected: %s", prepared.display_name)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,7 @@ def infer_suffix(filename: Optional[str]) -> str:
 
 def prepare_audio(temp_path: Path, original_name: Optional[str]) -> PreparedAudio:
     validate_audio_file(temp_path, original_name)
+    dump_audio_for_debug(temp_path, original_name)
     silent = is_silent_audio(temp_path)
     display_name = original_name or temp_path.name
     return PreparedAudio(path=temp_path, display_name=display_name, silent=silent)
@@ -136,7 +138,16 @@ def is_silent_audio(path: Path, *, threshold: float = 5e-4) -> bool:
 
 
 def dump_audio_for_debug(path: Path, original_name: Optional[str]) -> Optional[Path]:
-    if not logger.isEnabledFor(logging.DEBUG):
+    enabled = (os.getenv("ASR_DUMP_AUDIO") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return None
+
+    raw_dir = (os.getenv("ASR_DUMP_AUDIO_DIR") or "").strip()
+    dest_dir = Path(raw_dir) if raw_dir else Path.cwd()
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.debug("transcribe_debug_dump_dir_failed: %s", dest_dir, exc_info=True)
         return None
 
     stem = Path(original_name).stem if original_name else path.stem
@@ -145,7 +156,7 @@ def dump_audio_for_debug(path: Path, original_name: Optional[str]) -> Optional[P
         suffix = path.suffix or ".wav"
 
     safe_stem = stem.replace("/", "_").replace("\\", "_") or "audio"
-    dest = Path.cwd() / f"debug_{safe_stem}_{uuid4().hex}{suffix}"
+    dest = dest_dir / f"debug_{safe_stem}_{uuid4().hex}{suffix}"
 
     try:
         shutil.copy2(path, dest)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence
 
@@ -167,7 +168,15 @@ def _transcribe_single(
     raw_result = transcribe(audio_input, path_or_hf_repo=model_name, **effective_kwargs)
     _memsnap("asr_post_transcribe", extra={"segments": len(raw_result.get("segments") or [])})
 
-    if effective_kwargs.get("condition_on_previous_text", True) and _should_retry_without_condition(raw_result):
+    repeat_detected = _should_retry_without_condition(raw_result)
+    if repeat_detected and _is_garble_text(raw_result.get("text", "")):
+        logger.warning("garble_detected_skip_retry: %s", display_name)
+        return _build_silence_result(
+            display_name=display_name,
+            language=raw_result.get("language") or language_hint,
+        )
+
+    if effective_kwargs.get("condition_on_previous_text", True) and repeat_detected:
         fallback_kwargs = dict(effective_kwargs)
         fallback_kwargs["condition_on_previous_text"] = False
         logger.warning("condition_retry_without_previous_text: %s", display_name)
@@ -179,6 +188,13 @@ def _transcribe_single(
                 "condition_on_previous_text": False,
             },
         )
+        repeat_detected = _should_retry_without_condition(raw_result)
+        if repeat_detected and _is_garble_text(raw_result.get("text", "")):
+            logger.warning("garble_detected_after_retry: %s", display_name)
+            return _build_silence_result(
+                display_name=display_name,
+                language=raw_result.get("language") or language_hint,
+            )
 
     if _should_force_silence(raw_result):
         logger.info("silence_by_model: %s", display_name)
@@ -202,7 +218,21 @@ def _translate_decode_error(exc: AudioDecodeError) -> RuntimeError:
     return RuntimeError("音声データのデコードに失敗しました。")
 
 
-def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 2e-4) -> bool:
+def _resolve_silence_threshold(fallback: float) -> float:
+    raw = os.getenv("ASR_SILENCE_THRESHOLD")
+    if raw is None:
+        return fallback
+    try:
+        value = float(raw)
+    except ValueError:
+        return fallback
+    if not np.isfinite(value) or value <= 0:
+        return fallback
+    return value
+
+
+def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 5e-4) -> bool:
+    threshold = _resolve_silence_threshold(threshold)
     if waveform.size == 0:
         return True
     energy = float(np.mean(np.abs(waveform)))
@@ -258,7 +288,7 @@ def _has_repeated_tail(text: str, *, min_chunk: int = 6, max_chunk: int = 30) ->
         return False
     normalized = text.replace("\n", "").replace("\r", "").replace(" ", "")
     if len(normalized) < min_chunk * 3:
-        return False
+        return _has_short_repeat_tail(normalized)
     tail = normalized[-max_chunk * 3 :]
     max_size = min(max_chunk, len(tail) // 3)
     for size in range(min_chunk, max_size + 1):
@@ -268,6 +298,33 @@ def _has_repeated_tail(text: str, *, min_chunk: int = 6, max_chunk: int = 30) ->
         mid = tail[-2 * size : -size]
         prev = tail[-3 * size : -2 * size]
         if last and last == mid == prev:
+            return True
+    return _has_short_repeat_tail(tail)
+
+
+def _is_garble_text(text: str, *, min_repeats: int = 5, max_unit: int = 3) -> bool:
+    if not text:
+        return False
+    normalized = text.replace("\n", "").replace("\r", "").replace(" ", "")
+    if len(normalized) < min_repeats:
+        return False
+    unique_chars = set(normalized)
+    if len(unique_chars) > 2:
+        return False
+    return _has_short_repeat_tail(normalized, min_repeats=min_repeats, max_unit=max_unit)
+
+
+def _has_short_repeat_tail(text: str, *, min_repeats: int = 5, max_unit: int = 3) -> bool:
+    if not text:
+        return False
+    if min_repeats <= 1:
+        return False
+    tail = text[-(max_unit * min_repeats) :]
+    for unit in range(1, max_unit + 1):
+        if len(tail) < unit * min_repeats:
+            continue
+        chunk = tail[-unit:]
+        if chunk and chunk * min_repeats == tail[-unit * min_repeats :]:
             return True
     return False
 
