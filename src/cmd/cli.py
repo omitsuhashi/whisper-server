@@ -146,12 +146,17 @@ def _build_shared_parent_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_decode_options(args: argparse.Namespace) -> dict[str, Any] | None:
+def _build_decode_options(
+    args: argparse.Namespace,
+    *,
+    language: str | None,
+) -> dict[str, Any] | None:
     prompt = build_prompt_from_metadata(
         agenda=getattr(args, "prompt_agenda", None),
         participants=getattr(args, "prompt_participants", None),
         products=getattr(args, "prompt_products", None),
         style=getattr(args, "prompt_style", None),
+        language=language,
     )
     if not prompt:
         return None
@@ -424,13 +429,16 @@ def _prepare_asr_runtime(
     args: argparse.Namespace,
 ) -> tuple[str, str | None, Any, Any]:
     args._stream_output = False  # type: ignore[attr-defined]
-    args._decode_options = _build_decode_options(args)  # type: ignore[attr-defined]
     _, transcribe_all_fn, transcribe_all_bytes_fn = _load_asr_components()
     model_name, language = resolve_model_and_language(
         args.model,
         args.language,
         default_model=DEFAULT_MODEL_NAME,
         default_language=DEFAULT_LANGUAGE,
+    )
+    args._decode_options = _build_decode_options(  # type: ignore[attr-defined]
+        args,
+        language=language,
     )
     return model_name, language, transcribe_all_fn, transcribe_all_bytes_fn
 

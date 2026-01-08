@@ -4,14 +4,25 @@ from dataclasses import dataclass
 import re
 from typing import Sequence
 
+from src.config.defaults import DEFAULT_LANGUAGE
+
 PROMPT_TOKEN_LIMIT = 224
 """Whisper の initial_prompt が許容する概算トークン数。"""
 
 _APPROX_CHARS_PER_TOKEN = 4
-_DEFAULT_STYLE_GUIDANCE = (
+_DEFAULT_STYLE_GUIDANCE_JA = (
     "英数字は半角、技術用語は英語綴り、句点は「。」読点は「、」。"
     "要約せず、話した内容をできるだけそのまま書き起こしてください。"
 )
+_DEFAULT_STYLE_GUIDANCE_EN = (
+    "Use ASCII for alphanumerics, keep technical terms in original spelling, "
+    "and use standard punctuation. Do not summarize; transcribe verbatim."
+)
+_DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE = {
+    "ja": _DEFAULT_STYLE_GUIDANCE_JA,
+    "en": _DEFAULT_STYLE_GUIDANCE_EN,
+}
+_DEFAULT_STYLE_GUIDANCE = _DEFAULT_STYLE_GUIDANCE_JA
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,28 @@ def normalize_prompt_items(raw: str | Sequence[str] | None) -> list[str]:
             if cleaned:
                 items.append(cleaned)
     return items
+
+
+def _normalize_language_key(language: str | None) -> str:
+    if not language:
+        return DEFAULT_LANGUAGE
+    cleaned = language.strip().lower()
+    if not cleaned:
+        return DEFAULT_LANGUAGE
+    return re.split(r"[-_]", cleaned)[0] or DEFAULT_LANGUAGE
+
+
+def _resolve_style_guidance(language: str | None) -> str:
+    key = _normalize_language_key(language)
+    if key in _DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE:
+        return _DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE[key]
+    if language:
+        return _DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE["en"]
+    default_key = _normalize_language_key(DEFAULT_LANGUAGE)
+    return _DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE.get(
+        default_key,
+        _DEFAULT_STYLE_GUIDANCE_BY_LANGUAGE["en"],
+    )
 
 
 def build_initial_prompt(context: PromptContext, *, token_limit: int = PROMPT_TOKEN_LIMIT) -> str | None:
@@ -107,6 +140,7 @@ def build_prompt_from_metadata(
     terms: str | Sequence[str] | None = None,
     dictionary: str | Sequence[str] | None = None,
     style: str | None = None,
+    language: str | None = None,
     token_limit: int = PROMPT_TOKEN_LIMIT,
 ) -> str | None:
     """CLI/HTTP から渡された文字列群を正規化して initial_prompt を返す。"""
@@ -118,8 +152,7 @@ def build_prompt_from_metadata(
     dictionary_items = normalize_prompt_items(dictionary)
 
     style_value = (style or "").strip()
-    if not (agenda_items or participant_items or product_items or terms_items or dictionary_items or style_value):
-        return None
+    style_guidance = style_value or _resolve_style_guidance(language)
 
     context = PromptContext(
         agenda_items=agenda_items,
@@ -127,7 +160,7 @@ def build_prompt_from_metadata(
         products=product_items,
         terms=terms_items,
         dictionary=dictionary_items,
-        style_guidance=style_value or None,
+        style_guidance=style_guidance,
     )
     return build_initial_prompt(context, token_limit=token_limit)
 
