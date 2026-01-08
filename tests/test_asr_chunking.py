@@ -128,6 +128,53 @@ class ChunkingVadPhaseTests(unittest.TestCase):
         self.assertEqual(chunk_counts, [4])
         mock_detect.assert_called_once()
 
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments")
+    def test_vad_segments_overflow_falls_back_to_linear_chunking(self, mock_detect: mock.Mock) -> None:
+        sample_rate = 16000
+        segments = []
+        for idx in range(20):
+            start = idx * 0.1
+            end = start + 0.05
+            segments.append(
+                SpeechSegment(
+                    start=start,
+                    end=end,
+                    start_sample=int(start * sample_rate),
+                    end_sample=int(end * sample_rate),
+                )
+            )
+        mock_detect.return_value = segments
+
+        chunk_counts: list[int] = []
+
+        def fake_transcribe(blobs, *, model_name, language, task, names, **decode_options):
+            chunk_counts.append(len(blobs))
+            return [
+                TranscriptionResult(
+                    filename=name,
+                    text=name,
+                    language=language,
+                    segments=[],
+                )
+                for name in names
+            ]
+
+        with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+            tmp.write(_generate_wav_bytes(duration_sec=2.0))
+            tmp.flush()
+            transcribe_paths_chunked(
+                [tmp.name],
+                model_name="demo",
+                language="ja",
+                task=None,
+                chunk_seconds=0.5,
+                overlap_seconds=0.1,
+                transcribe_all_bytes_fn=fake_transcribe,
+            )
+
+        self.assertEqual(chunk_counts, [4])
+        mock_detect.assert_called_once()
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

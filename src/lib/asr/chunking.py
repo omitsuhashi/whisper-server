@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 ChunkWindow = Tuple[int, int, int, int]
 TranscribeBytesFn = Callable[..., List[TranscriptionResult]]
 _DEFAULT_VAD_CONFIG = VadConfig()
+_MAX_VAD_CHUNK_MULTIPLIER = 2.0  # VAD が過分割した場合のガード
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -180,6 +181,27 @@ def _phase_plan_chunking(
     return _build_chunks(total_samples, chunk_samples, overlap_samples)
 
 
+def _cap_chunk_windows(
+    chunk_windows: Sequence[ChunkWindow],
+    *,
+    total_samples: int,
+    chunk_samples: int,
+    overlap_samples: int,
+) -> List[ChunkWindow]:
+    baseline = _build_chunks(total_samples, chunk_samples, overlap_samples)
+    if not baseline:
+        return list(chunk_windows)
+    if len(chunk_windows) > len(baseline) * _MAX_VAD_CHUNK_MULTIPLIER:
+        logger.warning(
+            "vad_chunk_plan_too_fragmented: total_samples=%d planned=%d baseline=%d",
+            total_samples,
+            len(chunk_windows),
+            len(baseline),
+        )
+        return baseline
+    return list(chunk_windows)
+
+
 def _phase_run_asr(
     chunk_windows: Sequence[ChunkWindow],
     waveform: np.ndarray,
@@ -294,6 +316,12 @@ def transcribe_waveform_chunked(
     overlap_samples = int(_SR * overlap_seconds)
     segments = _phase_detect_segments(wave, _SR, vad_config=vad_cfg)
     chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
+    chunk_windows = _cap_chunk_windows(
+        chunk_windows,
+        total_samples=total,
+        chunk_samples=chunk_samples,
+        overlap_samples=overlap_samples,
+    )
     if transcribe_all_bytes_fn is not None:
         partials = _phase_run_asr(
             chunk_windows,
@@ -367,6 +395,12 @@ def transcribe_paths_chunked(
         overlap_samples = int(_SR * overlap_seconds)
         segments = _phase_detect_segments(waveform, _SR, vad_config=vad_cfg)
         chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
+        chunk_windows = _cap_chunk_windows(
+            chunk_windows,
+            total_samples=total,
+            chunk_samples=chunk_samples,
+            overlap_samples=overlap_samples,
+        )
         partials = _phase_run_asr(
             chunk_windows,
             waveform,

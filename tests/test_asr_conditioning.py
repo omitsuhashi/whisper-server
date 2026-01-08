@@ -70,6 +70,62 @@ class ConditionFallbackTests(unittest.TestCase):
         self.assertFalse(second_kwargs["condition_on_previous_text"])
         self.assertGreaterEqual(mock_memsnap.call_count, 3)
 
+    @mock.patch("src.lib.asr.pipeline._memsnap")
+    @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_transcribe_falls_back_on_short_repeat(self, mock_transcribe: mock.Mock, mock_memsnap: mock.Mock) -> None:
+        loop_payload = {
+            "text": "abcabcabcabcabc",
+            "segments": [{"text": "abcabcabcabcabc"}],
+            "language": "ja",
+        }
+        clean_payload = {
+            "text": "clean result",
+            "segments": [{"text": "clean result"}],
+            "language": "ja",
+        }
+        mock_transcribe.side_effect = [loop_payload, clean_payload]
+
+        result = _transcribe_single(
+            audio_input=b"",
+            display_name="loop.wav",
+            model_name="demo",
+            transcribe_kwargs={},
+            language_hint="ja",
+        )
+
+        self.assertEqual(result.text, "clean result")
+        self.assertEqual(mock_transcribe.call_count, 2)
+        first_kwargs = mock_transcribe.call_args_list[0].kwargs
+        second_kwargs = mock_transcribe.call_args_list[1].kwargs
+        self.assertTrue(first_kwargs["condition_on_previous_text"])
+        self.assertFalse(second_kwargs["condition_on_previous_text"])
+        self.assertGreaterEqual(mock_memsnap.call_count, 3)
+
+    @mock.patch("src.lib.asr.pipeline._memsnap")
+    @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_transcribe_skips_retry_on_garble_short_repeat(
+        self, mock_transcribe: mock.Mock, mock_memsnap: mock.Mock
+    ) -> None:
+        loop_payload = {
+            "text": "けけけけけけ",
+            "segments": [{"text": "けけけけけけ"}],
+            "language": "ja",
+        }
+        mock_transcribe.return_value = loop_payload
+
+        result = _transcribe_single(
+            audio_input=b"",
+            display_name="loop.wav",
+            model_name="demo",
+            transcribe_kwargs={},
+            language_hint="ja",
+        )
+
+        self.assertEqual(result.text, "")
+        self.assertEqual(mock_transcribe.call_count, 1)
+        self.assertTrue(mock_transcribe.call_args.kwargs["condition_on_previous_text"])
+        self.assertGreaterEqual(mock_memsnap.call_count, 2)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
