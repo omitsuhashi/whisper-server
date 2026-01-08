@@ -58,7 +58,7 @@ define RUN_AUDIO_STREAM
 	ffmpeg -hide_banner -loglevel error -f "$$INPUT_FMT" -i "$$DEVICE_VAL" -ac 1 -ar 16000 $$SECONDS_OPT -f wav - | $(CLI) stream $$FLAGS
 endef
 
-.PHONY: help cli cli-help cli-files cli-frames cli-stream audio-stream audio-devices http test shell db-up db-down db-logs kb-ingest
+.PHONY: help cli cli-help cli-files cli-frames cli-stream eval-kta audio-stream audio-devices http test shell db-up db-down db-logs kb-ingest
 
 help:
 	@echo "Available targets:"
@@ -71,6 +71,8 @@ help:
 	@echo "                               # 動画から代表フレームを抽出"
 	@echo "  make cli-stream [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # 標準入力経由でストリーム書き起こし (音声バイトをパイプで供給すること)"
+	@echo "  make eval-kta JSONL=path [SERVER=...] [MODE=...] [CHUNK_SECONDS=...] [OVERLAP_SECONDS=...]"
+	@echo "                               # KTA 評価 (PROMPT_* は tools/eval_keyterms.md 参照)"
 	@echo "  make audio-stream [DEVICE=...] [SECONDS=...] [MODEL=...] [LANGUAGE=...] [TASK=...] [NAME=...] [STREAM_INTERVAL=...]"
 	@echo "                               # マイク録音→CLI ストリーム (OS ごとに自動判定)"
 	@echo "  make audio-devices           # 利用可能な録音デバイス一覧を表示"
@@ -128,6 +130,25 @@ cli-stream:
 	if [ -n "$(NAME)" ]; then FLAGS="$$FLAGS --name $(NAME)"; fi; \
 	echo "$(CLI) stream $$FLAGS"; \
 	$(CLI) stream $$FLAGS
+
+eval-kta:
+	@if [ -z "$(JSONL)" ]; then \
+		echo "Usage: make $@ JSONL=path/to/data.jsonl [SERVER=...] [MODE=...] [CHUNK_SECONDS=...] [OVERLAP_SECONDS=...]"; \
+		exit 1; \
+	fi
+	@FLAGS=""; \
+	if [ -n "$(SERVER)" ]; then FLAGS="$$FLAGS --server $(SERVER)"; fi; \
+	if [ -n "$(PROMPT_TERMS)" ]; then FLAGS="$$FLAGS --prompt_terms $(PROMPT_TERMS)"; fi; \
+	if [ -n "$(PROMPT_DICTIONARY)" ]; then FLAGS="$$FLAGS --prompt_dictionary $(PROMPT_DICTIONARY)"; fi; \
+	if [ -n "$(PROMPT_AGENDA)" ]; then FLAGS="$$FLAGS --prompt_agenda $(PROMPT_AGENDA)"; fi; \
+	if [ -n "$(PROMPT_PARTICIPANTS)" ]; then FLAGS="$$FLAGS --prompt_participants $(PROMPT_PARTICIPANTS)"; fi; \
+	if [ -n "$(PROMPT_PRODUCTS)" ]; then FLAGS="$$FLAGS --prompt_products $(PROMPT_PRODUCTS)"; fi; \
+	if [ -n "$(PROMPT_STYLE)" ]; then FLAGS="$$FLAGS --prompt_style $(PROMPT_STYLE)"; fi; \
+	if [ -n "$(CHUNK_SECONDS)" ]; then FLAGS="$$FLAGS --chunk_seconds $(CHUNK_SECONDS)"; fi; \
+	if [ -n "$(OVERLAP_SECONDS)" ]; then FLAGS="$$FLAGS --overlap_seconds $(OVERLAP_SECONDS)"; fi; \
+	if [ -n "$(MODE)" ]; then FLAGS="$$FLAGS --mode $(MODE)"; fi; \
+	echo "$(PYTHON) tools/eval_keyterms.py --jsonl $(JSONL) $$FLAGS"; \
+	$(PYTHON) tools/eval_keyterms.py --jsonl $(JSONL) $$FLAGS
 
 audio-stream:
 	$(call RUN_AUDIO_STREAM,)
