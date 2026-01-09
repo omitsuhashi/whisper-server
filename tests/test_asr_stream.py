@@ -439,6 +439,45 @@ class HttpRestTests(unittest.TestCase):
         self.assertEqual(kwargs["language"], "ja")
         self.assertIsNone(kwargs.get("decode_options"))
 
+    @mock.patch("src.cmd.http.transcribe_paths_via_worker")
+    @mock.patch("src.cmd.http.transcribe_prepared_audios")
+    def test_transcribe_endpoint_applies_filler_removal_for_final(
+        self,
+        mock_transcribe_prepared: mock.Mock,
+        mock_transcribe_worker: mock.Mock,
+    ) -> None:
+        mock_transcribe_worker.return_value = []
+
+        def fake_transcribe(prepared, **kwargs):
+            results = []
+            for entry in list(prepared):
+                results.append(
+                    TranscriptionResult(
+                        filename=entry.display_name,
+                        text="えーと、今日は",
+                        language=kwargs.get("language"),
+                        segments=[{"text": "えーと、今日は"}],
+                    )
+                )
+            return results
+
+        mock_transcribe_prepared.side_effect = fake_transcribe
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe",
+            headers={"X-Whisper-Mode": "final"},
+            files=[("files", ("sample1.wav", _generate_wav_bytes(), "audio/wav"))],
+            data={"model": "fake-model", "language": "ja"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["text"], "今日は")
+        self.assertEqual(payload[0]["segments"][0]["text"], "今日は")
+
 
 class HttpRestPcmTests(unittest.TestCase):
     @mock.patch.dict("os.environ", {"ASR_OVERLAP_SECONDS": "1.0"})
@@ -488,6 +527,58 @@ class HttpRestPcmTests(unittest.TestCase):
         _, kwargs = mock_transcribe_chunked.call_args
         self.assertEqual(kwargs["chunk_seconds"], 4.0)
         self.assertEqual(kwargs["overlap_seconds"], 1.0)
+
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_applies_filler_removal_for_final(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(
+            filename="audio.pcm",
+            text="えーと、今日は",
+            segments=[{"text": "えーと、今日は"}],
+        )
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            headers={"X-Whisper-Mode": "final"},
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+            data={"chunk_seconds": "5"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["text"], "今日は")
+        self.assertEqual(payload[0]["segments"][0]["text"], "今日は")
+
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_skips_filler_removal_for_preview(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(
+            filename="audio.pcm",
+            text="えーと、今日は",
+            segments=[{"text": "えーと、今日は"}],
+        )
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            headers={"X-Whisper-Mode": "preview"},
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+            data={"chunk_seconds": "5"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["text"], "えーと、今日は")
+        self.assertEqual(payload[0]["segments"][0]["text"], "えーと、今日は")
 
 
 if __name__ == "__main__":  # pragma: no cover
