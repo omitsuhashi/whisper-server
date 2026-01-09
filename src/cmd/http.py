@@ -18,6 +18,7 @@ from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
 from src.lib.asr import TranscriptionResult, transcribe_all
 from src.lib.asr.chunking import transcribe_paths_chunked, transcribe_waveform_chunked
+from src.lib.asr.filler import apply_filler_removal
 from src.lib.asr.options import TranscribeOptions
 from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
@@ -72,6 +73,11 @@ def _resolve_overlap_seconds(overlap_seconds: Optional[float], *, chunk_seconds:
 def _use_default_style_prompt() -> bool:
     raw = (os.getenv("ASR_DEFAULT_STYLE_PROMPT", "0") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _filler_enabled(mode: str) -> bool:
+    cleaned = (mode or "").strip().lower()
+    return cleaned in {"final", "clean"}
 
 
 @dataclass(frozen=True)
@@ -359,6 +365,9 @@ def create_app() -> FastAPI:
             ],
         )
 
+        if _filler_enabled(mode):
+            updated = [apply_filler_removal(res, enabled=True) for res in updated]
+
         return updated
 
     @app.post("/transcribe_pcm", response_model=list[TranscriptionResult])
@@ -502,6 +511,8 @@ def create_app() -> FastAPI:
                 "duration": result.duration,
             },
         )
+        enabled = _filler_enabled(mode)
+        result = apply_filler_removal(result, enabled=enabled)
         return [result]
 
     return app
