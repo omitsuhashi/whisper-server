@@ -420,11 +420,12 @@ class HttpRestTests(unittest.TestCase):
             ("files", ("speech.wav", _generate_wav_bytes(), "audio/wav")),
         ]
 
-        response = client.post(
-            "/transcribe",
-            files=files,
-            data={"model": "fake-model", "language": "ja"},
-        )
+        with mock.patch.dict("os.environ", {"ASR_DEFAULT_STYLE_PROMPT": "0"}, clear=False):
+            response = client.post(
+                "/transcribe",
+                files=files,
+                data={"model": "fake-model", "language": "ja"},
+            )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()

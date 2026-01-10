@@ -126,6 +126,36 @@ class ConditionFallbackTests(unittest.TestCase):
         self.assertTrue(mock_transcribe.call_args.kwargs["condition_on_previous_text"])
         self.assertGreaterEqual(mock_memsnap.call_count, 2)
 
+    @mock.patch("src.lib.asr.pipeline._memsnap")
+    @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_transcribe_forces_silence_when_repeat_after_retry(
+        self, mock_transcribe: mock.Mock, mock_memsnap: mock.Mock
+    ) -> None:
+        loop_payload = {
+            "text": "foo bar foo bar foo bar foo bar",
+            "segments": [{"text": "foo bar"} for _ in range(6)],
+            "language": "ja",
+        }
+        mock_transcribe.side_effect = [loop_payload, loop_payload]
+
+        result = _transcribe_single(
+            audio_input=b"",
+            display_name="loop.wav",
+            model_name="demo",
+            transcribe_kwargs={},
+            language_hint="ja",
+        )
+
+        self.assertEqual(result.text, "")
+        self.assertEqual(result.segments, [])
+        self.assertEqual(result.duration, 0.0)
+        self.assertEqual(mock_transcribe.call_count, 2)
+        first_kwargs = mock_transcribe.call_args_list[0].kwargs
+        second_kwargs = mock_transcribe.call_args_list[1].kwargs
+        self.assertTrue(first_kwargs["condition_on_previous_text"])
+        self.assertFalse(second_kwargs["condition_on_previous_text"])
+        self.assertGreaterEqual(mock_memsnap.call_count, 3)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
