@@ -189,8 +189,10 @@ def _transcribe_single(
             },
         )
         repeat_detected = _should_retry_without_condition(raw_result)
-        if repeat_detected and _is_garble_text(raw_result.get("text", "")):
-            logger.warning("garble_detected_after_retry: %s", display_name)
+        if repeat_detected:
+            if _is_garble_text(raw_result.get("text", "")):
+                logger.warning("garble_detected_after_retry: %s", display_name)
+            logger.warning("repeat_detected_after_retry_force_silence: %s", display_name)
             return _build_silence_result(
                 display_name=display_name,
                 language=raw_result.get("language") or language_hint,
@@ -231,7 +233,7 @@ def _resolve_silence_threshold(fallback: float) -> float:
     return value
 
 
-def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 5e-4) -> bool:
+def _is_waveform_silent(waveform: np.ndarray, *, threshold: float = 1e-3) -> bool:
     threshold = _resolve_silence_threshold(threshold)
     if waveform.size == 0:
         return True
