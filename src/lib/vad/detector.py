@@ -14,10 +14,13 @@ class VadConfig:
     frame_duration: float = 0.03
     """1 フレームの長さ [sec]。"""
 
+    frame_hop_duration: float = 0.01
+    """フレームのホップ [sec]（<= frame_duration）。境界精度と誤検出抑制に効く。"""
+
     energy_threshold: float | None = None
     """固定しきい値（指定しない場合は波形に応じて推定）。"""
 
-    min_energy: float = 1e-4
+    min_energy: float = 5e-4
     """自動しきい値計算時の下限。"""
 
     dynamic_threshold_ratio: float = 2.5
@@ -25,6 +28,18 @@ class VadConfig:
 
     noise_quantile: float = 0.2
     """ノイズ推定に使う分位点 (0-1)。"""
+
+    energy_smoothing_frames: int = 5
+    """エネルギー時系列の移動平均フレーム数（>=1）。瞬間ノイズを抑える。"""
+
+    hysteresis_ratio: float = 0.7
+    """OFF しきい値 = ON しきい値 * hysteresis_ratio（0-1）。チャタリング抑制。"""
+
+    start_trigger_frames: int = 2
+    """ON へ遷移するのに必要な連続フレーム数。瞬間スパイクを抑える。"""
+
+    end_trigger_frames: int = 3
+    """OFF へ遷移するのに必要な連続フレーム数。語尾切れを抑える。"""
 
     min_speech_duration: float = 0.3
     """この長さ未満の区間は除去する。"""
@@ -63,12 +78,22 @@ def detect_voice_segments(waveform: np.ndarray, sample_rate: int, *, config: Vad
         return []
 
     frame_size = max(int(cfg.frame_duration * sample_rate), 1)
-    frame_bounds, energies = _calc_frame_energies(wf, frame_size)
+    hop_duration = float(cfg.frame_hop_duration if cfg.frame_hop_duration is not None else cfg.frame_duration)
+    hop_duration = max(0.0, min(hop_duration, float(cfg.frame_duration)))
+    hop_size = max(int(hop_duration * sample_rate), 1)
+    frame_bounds, energies = _calc_frame_energies(wf, frame_size, hop_size)
     if not energies:
         return []
 
+    energies = _smooth_series(energies, window=max(int(cfg.energy_smoothing_frames), 1))
     threshold = _estimate_threshold(energies, cfg)
-    voiced_flags = [energy >= threshold for energy in energies]
+    voiced_flags = _hysteresis_binarize(
+        energies,
+        on_threshold=threshold,
+        off_threshold=threshold * float(np.clip(cfg.hysteresis_ratio, 0.0, 1.0)),
+        start_trigger=max(int(cfg.start_trigger_frames), 1),
+        end_trigger=max(int(cfg.end_trigger_frames), 1),
+    )
     raw_segments = _collect_segments(voiced_flags)
     if not raw_segments:
         return []
@@ -143,12 +168,18 @@ def _ensure_mono_waveform(waveform: np.ndarray) -> np.ndarray:
     return np.mean(wf, axis=-1)
 
 
-def _calc_frame_energies(waveform: np.ndarray, frame_size: int) -> Tuple[List[Tuple[int, int]], List[float]]:
+def _calc_frame_energies(
+    waveform: np.ndarray,
+    frame_size: int,
+    hop_size: int,
+) -> Tuple[List[Tuple[int, int]], List[float]]:
     bounds: List[Tuple[int, int]] = []
     energies: List[float] = []
     total = waveform.size
-    for start in range(0, total, frame_size):
-        end = min(total, start + frame_size)
+    hop = max(int(hop_size), 1)
+    size = max(int(frame_size), 1)
+    for start in range(0, total, hop):
+        end = min(total, start + size)
         frame = waveform[start:end]
         if frame.size == 0:
             continue
@@ -156,6 +187,74 @@ def _calc_frame_energies(waveform: np.ndarray, frame_size: int) -> Tuple[List[Tu
         bounds.append((start, end))
         energies.append(energy)
     return bounds, energies
+
+
+def _smooth_series(values: Sequence[float], *, window: int) -> List[float]:
+    if window <= 1:
+        return [float(v) for v in values]
+    arr = np.asarray(values, dtype=np.float32)
+    if arr.size == 0:
+        return []
+    kernel = np.ones(int(window), dtype=np.float32) / float(window)
+    smoothed = np.convolve(arr, kernel, mode="same")
+    return [float(x) for x in smoothed]
+
+
+def _hysteresis_binarize(
+    energies: Sequence[float],
+    *,
+    on_threshold: float,
+    off_threshold: float,
+    start_trigger: int,
+    end_trigger: int,
+) -> List[bool]:
+    if not energies:
+        return []
+    on_th = float(on_threshold) if math.isfinite(float(on_threshold)) else 0.0
+    off_th = float(off_threshold) if math.isfinite(float(off_threshold)) else 0.0
+    if off_th > on_th:
+        off_th = on_th
+    start_trigger = max(int(start_trigger), 1)
+    end_trigger = max(int(end_trigger), 1)
+
+    flags = [False] * len(energies)
+    in_speech = False
+    above = 0
+    below = 0
+
+    for i, e in enumerate(energies):
+        energy = float(e)
+        if not math.isfinite(energy):
+            energy = 0.0
+
+        if not in_speech:
+            if energy >= on_th:
+                above += 1
+                if above >= start_trigger:
+                    in_speech = True
+                    start_idx = i - start_trigger + 1
+                    for j in range(start_idx, i + 1):
+                        flags[j] = True
+                    above = 0
+                    below = 0
+            else:
+                above = 0
+            continue
+
+        flags[i] = True
+        if energy <= off_th:
+            below += 1
+            if below >= end_trigger:
+                end_idx = i - end_trigger + 1
+                for j in range(end_idx, i + 1):
+                    flags[j] = False
+                in_speech = False
+                above = 0
+                below = 0
+        else:
+            below = 0
+
+    return flags
 
 
 def _estimate_threshold(energies: Sequence[float], cfg: VadConfig) -> float:
