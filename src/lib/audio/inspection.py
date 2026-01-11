@@ -109,7 +109,7 @@ def validate_audio_file(path: Path, original_name: Optional[str]) -> None:
     )
 
 
-def is_silent_audio(path: Path, *, threshold: float = 5e-4) -> bool:
+def is_silent_audio(path: Path, *, threshold: float = 1.5e-3) -> bool:
     cached = _get_cached_silence(path)
     if cached is not None:
         return cached

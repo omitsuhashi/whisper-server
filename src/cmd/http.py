@@ -66,7 +66,7 @@ def _resolve_overlap_seconds(overlap_seconds: Optional[float], *, chunk_seconds:
 
 
 def _use_default_style_prompt() -> bool:
-    raw = (os.getenv("ASR_DEFAULT_STYLE_PROMPT", "0") or "").strip().lower()
+    raw = (os.getenv("ASR_DEFAULT_STYLE_PROMPT", "1") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
