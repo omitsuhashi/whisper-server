@@ -85,6 +85,47 @@ class TestWaveformChunking(unittest.TestCase):
         mock_detect.assert_called_once()
 
     @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])
+    def test_chunk_merge_preserves_confidence_metrics(self, mock_detect: mock.Mock) -> None:
+        def fake_transcribe(blobs, *, model_name, language, task, names, **decode_options):
+            results = []
+            for idx, name in enumerate(names):
+                text = "A" if idx == 0 else "B"
+                results.append(
+                    TranscriptionResult(
+                        filename=name,
+                        text=text,
+                        language=language,
+                        segments=[
+                            TranscriptionSegment(
+                                start=0.0,
+                                end=0.4,
+                                text=text,
+                                avg_logprob=-0.5,
+                                compression_ratio=1.2,
+                                no_speech_prob=0.1,
+                            )
+                        ],
+                    )
+                )
+            return results
+
+        wave = np.full(16000 * 2, 0.01, dtype=np.float32)
+        options = TranscribeOptions(model_name="demo", language="ja", task=None)
+        result = transcribe_waveform_chunked(
+            wave,
+            options=options,
+            name="pcm",
+            chunk_seconds=1.0,
+            overlap_seconds=0.0,
+            transcribe_all_bytes_fn=fake_transcribe,
+        )
+
+        self.assertEqual(result.segments[0].avg_logprob, -0.5)
+        self.assertEqual(result.segments[0].compression_ratio, 1.2)
+        self.assertEqual(result.segments[0].no_speech_prob, 0.1)
+        mock_detect.assert_called_once()
+
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments", return_value=[])
     def test_chunk_merge_keeps_zero_duration_for_all_silent_partials(self, mock_detect: mock.Mock) -> None:
         def fake_transcribe(blobs, *, model_name, language, task, names, **decode_options):
             return [

@@ -23,6 +23,7 @@ from src.lib.asr.options import TranscribeOptions
 from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.asr.prompting import build_prompt_from_metadata, normalize_prompt_items
+from src.lib.asr.quality import analyze_transcription_quality
 from src.lib.audio import (
     AudioDecodeError,
     InvalidAudioError,
@@ -379,6 +380,10 @@ def create_app() -> FastAPI:
 
         if _filler_enabled(mode):
             updated = [apply_filler_removal(res, enabled=True) for res in updated]
+        updated = [
+            res.model_copy(update={"diagnostics": analyze_transcription_quality(res)})
+            for res in updated
+        ]
 
         return updated
 
@@ -525,6 +530,7 @@ def create_app() -> FastAPI:
         )
         enabled = _filler_enabled(mode)
         result = apply_filler_removal(result, enabled=enabled)
+        result = result.model_copy(update={"diagnostics": analyze_transcription_quality(result)})
         return [result]
 
     return app

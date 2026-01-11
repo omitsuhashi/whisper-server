@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +22,26 @@ class TranscriptionSegment(BaseModel):
     no_speech_prob: float | None = None
 
 
+class FlaggedSegment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    start: float
+    end: float
+    text: str
+    reasons: List[str] = Field(default_factory=list)
+    avg_logprob: float | None = None
+    compression_ratio: float | None = None
+    no_speech_prob: float | None = None
+
+
+class TranscriptionDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    flags: List[str] = Field(default_factory=list)
+    flagged_segments: List[FlaggedSegment] = Field(default_factory=list)
+    metrics: Dict[str, float] = Field(default_factory=dict)
+
+
 class TranscriptionResult(BaseModel):
     """書き起こし結果を扱いやすい形に正規化したモデル。"""
 
@@ -32,6 +52,12 @@ class TranscriptionResult(BaseModel):
     language: str | None = None
     duration: float | None = None
     segments: List[TranscriptionSegment] = Field(default_factory=list)
+    diagnostics: TranscriptionDiagnostics | None = None
 
 
-__all__ = ["TranscriptionResult", "TranscriptionSegment"]
+__all__ = [
+    "FlaggedSegment",
+    "TranscriptionDiagnostics",
+    "TranscriptionResult",
+    "TranscriptionSegment",
+]

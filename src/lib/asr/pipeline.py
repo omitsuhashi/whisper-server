@@ -253,6 +253,32 @@ def _build_silence_result(*, display_name: Path | str, language: str | None) -> 
     )
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_csv(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    items = [x.strip() for x in raw.split(",")]
+    return [x for x in items if x]
+
+
+def _iter_float(values: Iterable[float | None]) -> list[float]:
+    out: list[float] = []
+    for value in values:
+        if isinstance(value, (int, float)):
+            out.append(float(value))
+    return out
+
+
 def _should_force_silence(raw_result: dict[str, Any]) -> bool:
     text = (raw_result.get("text") or "").strip()
     if not text:
@@ -261,6 +287,25 @@ def _should_force_silence(raw_result: dict[str, Any]) -> bool:
     segments = raw_result.get("segments") or []
     if not isinstance(segments, list) or not segments:
         return False
+
+    phrases = _env_csv("ASR_HALLUCINATION_PHRASES", ["ご視聴ありがとうございました"])
+    if phrases and any(phrase in text for phrase in phrases):
+        no_speech_vals = _iter_float(
+            [seg.get("no_speech_prob") for seg in segments if isinstance(seg, dict)]
+        )
+        comp_vals = _iter_float(
+            [seg.get("compression_ratio") for seg in segments if isinstance(seg, dict)]
+        )
+        logp_vals = _iter_float(
+            [seg.get("avg_logprob") for seg in segments if isinstance(seg, dict)]
+        )
+        ns_min = _env_float("ASR_HALLUCINATION_PHRASE_NO_SPEECH_MIN", 0.6)
+        comp_th = _env_float("ASR_HALLUCINATION_COMPRESSION_RATIO", 2.4)
+        logp_th = _env_float("ASR_HALLUCINATION_AVG_LOGPROB", -1.0)
+        if (no_speech_vals and max(no_speech_vals) >= ns_min) or (
+            comp_vals and logp_vals and max(comp_vals) >= comp_th and min(logp_vals) <= logp_th
+        ):
+            return True
 
     scores: list[float] = []
     for segment in segments:
@@ -274,7 +319,18 @@ def _should_force_silence(raw_result: dict[str, Any]) -> bool:
     max_score = max(scores)
     avg_score = sum(scores) / len(scores)
     # Whisper の閾値は環境によって感度が高く出ることがあるため、より広い音量帯を許容するように上げておく。
-    return max_score >= 0.85 or avg_score >= 0.75
+    if max_score >= 0.85 or avg_score >= 0.75:
+        return True
+
+    comp_vals = _iter_float(
+        [seg.get("compression_ratio") for seg in segments if isinstance(seg, dict)]
+    )
+    logp_vals = _iter_float([seg.get("avg_logprob") for seg in segments if isinstance(seg, dict)])
+    comp_th = _env_float("ASR_FORCE_SILENCE_COMPRESSION_RATIO", 2.4)
+    logp_th = _env_float("ASR_FORCE_SILENCE_AVG_LOGPROB", -1.0)
+    if comp_vals and logp_vals and max(comp_vals) >= comp_th and min(logp_vals) <= logp_th:
+        return True
+    return False
 
 
 def _should_retry_without_condition(raw_result: dict[str, Any]) -> bool:

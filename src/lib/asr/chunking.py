@@ -60,6 +60,12 @@ def _clip_segment(start: float, end: float, window_start: float, window_end: flo
     return new_start, new_end
 
 
+def _seg_get(seg: Any, key: str) -> Any:
+    if isinstance(seg, dict):
+        return seg.get(key)
+    return getattr(seg, key, None)
+
+
 def _merge_results(
     partials: Sequence[TranscriptionResult],
     *,
@@ -73,13 +79,13 @@ def _merge_results(
         window_start = main_start / float(_SR)
         window_end = main_end / float(_SR)
         for seg in getattr(res, "segments", []) or []:
-            seg_start = float(getattr(seg, "start", 0.0) or 0.0) + offset_sec
-            seg_end = float(getattr(seg, "end", seg_start) or seg_start) + offset_sec
+            seg_start = float(_seg_get(seg, "start") or 0.0) + offset_sec
+            seg_end = float(_seg_get(seg, "end") or seg_start) + offset_sec
             clipped = _clip_segment(seg_start, seg_end, window_start, window_end)
             if clipped is None:
                 continue
             new_start, new_end = clipped
-            seg_text = getattr(seg, "text", "")
+            seg_text = str(_seg_get(seg, "text") or "")
             if segments:
                 last = segments[-1]
                 last_text = getattr(last, "text", "").strip()
@@ -89,7 +95,15 @@ def _merge_results(
                         continue
             segments.append(
                 TranscriptionSegment.model_validate(
-                    {"start": new_start, "end": new_end, "text": seg_text}
+                    {
+                        "start": new_start,
+                        "end": new_end,
+                        "text": seg_text,
+                        "avg_logprob": _seg_get(seg, "avg_logprob"),
+                        "compression_ratio": _seg_get(seg, "compression_ratio"),
+                        "no_speech_prob": _seg_get(seg, "no_speech_prob"),
+                        "temperature": _seg_get(seg, "temperature"),
+                    }
                 )
             )
 
