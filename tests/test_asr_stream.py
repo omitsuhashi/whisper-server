@@ -598,13 +598,19 @@ class HttpRestPcmTests(unittest.TestCase):
             "/transcribe_pcm",
             headers={"X-Whisper-Mode": "preview"},
             files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
-            data={"chunk_seconds": "5"},
+            data={
+                "chunk_seconds": "5",
+                "window_start_seconds": "12.34",
+                "window_end_seconds": "24.56",
+            },
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload[0]["text"], "えーと、今日は")
         self.assertEqual(payload[0]["segments"][0]["text"], "えーと、今日は")
+        self.assertAlmostEqual(payload[0]["window_start_seconds"], 12.34, places=2)
+        self.assertAlmostEqual(payload[0]["window_end_seconds"], 24.56, places=2)
 
 
 if __name__ == "__main__":  # pragma: no cover
