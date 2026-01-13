@@ -403,6 +403,8 @@ def create_app() -> FastAPI:
         prompt_style: Optional[str] = Form(None),
         prompt_terms: Optional[str] = Form(None),
         prompt_dictionary: Optional[str] = Form(None),
+        window_start_seconds: Optional[float] = Form(None),
+        window_end_seconds: Optional[float] = Form(None),
     ) -> list[TranscriptionResult]:
         """PCM(s16le, mono) をそのまま書き起こして返す。"""
 
@@ -460,7 +462,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=detail) from exc
 
         logger.info(
-            "transcribe_pcm_start mode=%s file=%s bytes=%d sample_rate=%d model=%s language=%s task=%s chunk=%s overlap=%s terms=%d dict=%d prompt_chars=%d",
+            "transcribe_pcm_start mode=%s file=%s bytes=%d sample_rate=%d model=%s language=%s task=%s chunk=%s overlap=%s terms=%d dict=%d prompt_chars=%d win_start=%s win_end=%s",
             mode,
             filename,
             len(pcm_bytes),
@@ -473,6 +475,8 @@ def create_app() -> FastAPI:
             inputs.prompt_terms_count,
             inputs.prompt_dict_count,
             inputs.prompt_chars,
+            window_start_seconds,
+            window_end_seconds,
         )
 
         options = TranscribeOptions(
@@ -530,7 +534,13 @@ def create_app() -> FastAPI:
         )
         enabled = _filler_enabled(mode)
         result = apply_filler_removal(result, enabled=enabled)
-        result = result.model_copy(update={"diagnostics": analyze_transcription_quality(result)})
+        result = result.model_copy(
+            update={
+                "diagnostics": analyze_transcription_quality(result),
+                "window_start_seconds": window_start_seconds,
+                "window_end_seconds": window_end_seconds,
+            }
+        )
         return [result]
 
     return app

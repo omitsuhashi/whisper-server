@@ -53,6 +53,8 @@ class TranscriptionResult(BaseModel):
     duration: float | None = None
     segments: List[TranscriptionSegment] = Field(default_factory=list)
     diagnostics: TranscriptionDiagnostics | None = None
+    window_start_seconds: float | None = None
+    window_end_seconds: float | None = None
 
 
 __all__ = [
