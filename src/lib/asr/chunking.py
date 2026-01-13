@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..audio import decode_audio_bytes, encode_waveform_to_wav_bytes
-from ..vad import SpeechSegment, VadConfig, detect_voice_segments
+from ..vad import SpeechSegment, VadConfig, detect_voice_segments, resolve_vad_config
 from .models import TranscriptionResult, TranscriptionSegment
 from .options import TranscribeOptions
 from .main import transcribe_all_bytes as _default_transcribe_all_bytes
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 ChunkWindow = Tuple[int, int, int, int]
 TranscribeBytesFn = Callable[..., List[TranscriptionResult]]
-_DEFAULT_VAD_CONFIG = VadConfig()
+_DEFAULT_VAD_CONFIG = resolve_vad_config()
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:

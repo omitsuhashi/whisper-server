@@ -50,6 +50,29 @@ class VadConfig:
     padding_duration: float = 0.05
     """両端に与えるフェード的な余白。"""
 
+    fusion_enabled: bool = False
+    """エネルギーVADとTransformer由来のspeech確率を時系列で融合して判定する。"""
+
+    transformer_model: str | None = None
+    """Transformer VAD 用モデル名（mlx_whisper の path_or_hf_repo を想定）。"""
+
+    fusion_energy_weight: float = 0.4
+    """融合スコアにおけるエネルギー側の重み。"""
+
+    fusion_transformer_weight: float = 0.6
+    """融合スコアにおけるTransformer側の重み。"""
+
+    fusion_on_threshold: float = 0.6
+    """融合スコアのON閾値（0-1）。"""
+
+    fusion_off_threshold: float = 0.4
+    """融合スコアのOFF閾値（0-1）。"""
+
+    fusion_gate_threshold: float = 0.15
+    """Transformerが低確率のときにエネルギー寄与を抑えるゲート（<=0で無効）。"""
+
+    fusion_smoothing_frames: int | None = None
+    """融合スコアの平滑化フレーム数（Noneなら energy_smoothing_frames を利用）。"""
 
 @dataclass(frozen=True, slots=True)
 class SpeechSegment:
@@ -87,13 +110,24 @@ def detect_voice_segments(waveform: np.ndarray, sample_rate: int, *, config: Vad
 
     energies = _smooth_series(energies, window=max(int(cfg.energy_smoothing_frames), 1))
     threshold = _estimate_threshold(energies, cfg)
-    voiced_flags = _hysteresis_binarize(
+    voiced_flags: List[bool] = _hysteresis_binarize(
         energies,
         on_threshold=threshold,
         off_threshold=threshold * float(np.clip(cfg.hysteresis_ratio, 0.0, 1.0)),
         start_trigger=max(int(cfg.start_trigger_frames), 1),
         end_trigger=max(int(cfg.end_trigger_frames), 1),
     )
+    fused = _maybe_fuse_with_transformer(
+        waveform=wf,
+        sample_rate=sample_rate,
+        frame_bounds=frame_bounds,
+        hop_duration=hop_duration,
+        energies=energies,
+        energy_threshold=threshold,
+        cfg=cfg,
+    )
+    if fused is not None:
+        voiced_flags = fused
     raw_segments = _collect_segments(voiced_flags)
     if not raw_segments:
         return []
@@ -157,6 +191,96 @@ def segment_waveform(
             )
             start = end
     return sliced
+
+
+def _maybe_fuse_with_transformer(
+    *,
+    waveform: np.ndarray,
+    sample_rate: int,
+    frame_bounds: Sequence[Tuple[int, int]],
+    hop_duration: float,
+    energies: Sequence[float],
+    energy_threshold: float,
+    cfg: VadConfig,
+) -> List[bool] | None:
+    if not cfg.fusion_enabled:
+        return None
+    model = (cfg.transformer_model or "").strip()
+    if not model:
+        return None
+    if hop_duration <= 0.0:
+        return None
+
+    try:
+        from .transformer import estimate_speech_probabilities
+    except Exception:
+        return None
+
+    try:
+        probs = estimate_speech_probabilities(
+            waveform,
+            sample_rate=sample_rate,
+            frame_bounds=frame_bounds,
+            hop_duration=hop_duration,
+            model_name=model,
+        )
+    except Exception:
+        return None
+
+    energy_list = list(energies)
+    if not probs or len(probs) != len(energy_list):
+        return None
+
+    w_e = float(cfg.fusion_energy_weight) if math.isfinite(float(cfg.fusion_energy_weight)) else 0.0
+    w_t = float(cfg.fusion_transformer_weight) if math.isfinite(float(cfg.fusion_transformer_weight)) else 0.0
+    w_e = max(w_e, 0.0)
+    w_t = max(w_t, 0.0)
+    total_w = w_e + w_t
+    if total_w <= 0:
+        return None
+    w_e /= total_w
+    w_t /= total_w
+
+    denom = float(energy_threshold) * 2.0
+    if not math.isfinite(denom) or denom <= 0:
+        denom = max(float(cfg.min_energy) * 2.0, 1e-12)
+
+    energy_arr = np.asarray(energy_list, dtype=np.float32)
+    energy_score = np.clip(energy_arr / float(denom), 0.0, 1.0)
+
+    smooth_frames = cfg.fusion_smoothing_frames
+    if smooth_frames is None:
+        smooth_frames = cfg.energy_smoothing_frames
+    smooth_frames = max(int(smooth_frames), 1)
+
+    prob_arr = np.asarray(probs, dtype=np.float32)
+    prob_arr = np.clip(prob_arr, 0.0, 1.0)
+    prob_arr = np.asarray(_smooth_series(prob_arr.tolist(), window=smooth_frames), dtype=np.float32)
+
+    gate = float(cfg.fusion_gate_threshold)
+    if math.isfinite(gate) and gate > 0:
+        gate_scale = np.clip(prob_arr / gate, 0.0, 1.0)
+        energy_score = energy_score * gate_scale
+
+    fused = (w_e * energy_score) + (w_t * prob_arr)
+    fused_list = _smooth_series(fused.tolist(), window=smooth_frames)
+
+    on_th = float(cfg.fusion_on_threshold)
+    off_th = float(cfg.fusion_off_threshold)
+    if not math.isfinite(on_th):
+        on_th = 0.6
+    if not math.isfinite(off_th):
+        off_th = 0.4
+    on_th = float(np.clip(on_th, 0.0, 1.0))
+    off_th = float(np.clip(off_th, 0.0, on_th))
+
+    return _hysteresis_binarize(
+        fused_list,
+        on_threshold=on_th,
+        off_threshold=off_th,
+        start_trigger=max(int(cfg.start_trigger_frames), 1),
+        end_trigger=max(int(cfg.end_trigger_frames), 1),
+    )
 
 
 def _ensure_mono_waveform(waveform: np.ndarray) -> np.ndarray:
