@@ -530,6 +530,31 @@ class HttpRestPcmTests(unittest.TestCase):
         self.assertEqual(kwargs["overlap_seconds"], 1.0)
 
     @mock.patch("src.cmd.http.transcribe_waveform_chunked")
+    def test_transcribe_pcm_returns_window_seconds(
+        self,
+        mock_transcribe_chunked: mock.Mock,
+    ) -> None:
+        mock_transcribe_chunked.return_value = TranscriptionResult(filename="audio.pcm", text="ok", segments=[])
+
+        app = http_cmd.create_app()
+        client = TestClient(app)
+
+        response = client.post(
+            "/transcribe_pcm",
+            files={"file": ("audio.pcm", _generate_pcm_bytes(), "application/octet-stream")},
+            data={
+                "chunk_seconds": "5",
+                "window_start_seconds": "1.5",
+                "window_end_seconds": "3.5",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload[0]["window_start_seconds"], 1.5)
+        self.assertEqual(payload[0]["window_end_seconds"], 3.5)
+
+    @mock.patch("src.cmd.http.transcribe_waveform_chunked")
     def test_transcribe_pcm_applies_filler_removal_for_final(
         self,
         mock_transcribe_chunked: mock.Mock,
