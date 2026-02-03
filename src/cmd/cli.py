@@ -880,9 +880,9 @@ def _streaming_transcription(
     from src.lib.asr.pipeline import transcribe_waveform
     from src.lib.asr.streaming_commit import SegmentCommitter
     from src.lib.asr.streaming_input import PcmRingBuffer, PcmStreamReader, open_ffmpeg_pcm_stream
+    from src.lib.asr.streaming_runtime import run_streaming_loop
 
     stdin_buffer = sys.stdin.buffer
-    last_flush = time.monotonic()
     final_result: TranscriptionResult | None = None
 
     target_sample_rate = int(SAMPLE_RATE)
@@ -918,39 +918,25 @@ def _streaming_transcription(
         decode_options=asr_decode,
     )
 
-    def flush(*, final: bool) -> None:
-        nonlocal final_result
-        if ring.samples.size == 0:
-            return
-        now_total_seconds = float(ring.total_samples) / float(target_sample_rate)
-        window_start_seconds = max(
-            0.0,
-            now_total_seconds - (float(ring.samples.size) / float(target_sample_rate)),
-        )
-        result = transcribe_waveform(ring.samples, options=options, name=name)
-        new_text = committer.update(
-            result,
-            window_start_seconds=window_start_seconds,
-            now_total_seconds=now_total_seconds,
-            final=final,
-        )
-        if emit_stdout and new_text:
-            sys.stdout.write(new_text)
-            sys.stdout.flush()
-        if final:
-            final_result = committer.build_result(filename=name, language=language)
+    def emit_text(text: str) -> None:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    def transcribe_window(waveform: np.ndarray) -> TranscriptionResult:
+        return transcribe_waveform(waveform, options=options, name=name)
 
     try:
-        while True:
-            waveform, eof = reader.read_waveform(chunk_size)
-            if eof:
-                break
-            if waveform.size > 0:
-                ring.append(waveform)
-            now = time.monotonic()
-            if interval <= 0 or (now - last_flush) >= interval:
-                flush(final=False)
-                last_flush = now
+        final_result = run_streaming_loop(
+            read_waveform=reader.read_waveform,
+            chunk_size=chunk_size,
+            interval=interval,
+            ring=ring,
+            committer=committer,
+            transcribe_fn=transcribe_window,
+            emit_fn=emit_text if emit_stdout else None,
+            finalize_fn=lambda: committer.build_result(filename=name, language=language),
+            target_sample_rate=target_sample_rate,
+        )
     except KeyboardInterrupt:
         if ring.samples.size:
             logger.debug("stream_interrupt: buffered_samples=%d", ring.samples.size)
@@ -960,7 +946,6 @@ def _streaming_transcription(
         if proc is not None:
             proc.terminate()
 
-    flush(final=True)
     if emit_stdout:
         sys.stdout.write("\n")
         sys.stdout.flush()
