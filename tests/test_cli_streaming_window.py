@@ -1,9 +1,8 @@
+import importlib
 import io
 import sys
 import types
 import unittest
-import wave
-from contextlib import closing
 from unittest import mock
 
 import numpy as np
@@ -16,13 +15,14 @@ mlx_stub = types.ModuleType("mlx_whisper")
 audio_stub = types.ModuleType("mlx_whisper.audio")
 audio_stub.SAMPLE_RATE = 16000
 mlx_stub.audio = audio_stub
+mlx_stub.transcribe = lambda *args, **kwargs: {}
 sys.modules["mlx_whisper.audio"] = audio_stub
 sys.modules["mlx_whisper"] = mlx_stub
 sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 sys.modules.setdefault("torch", types.ModuleType("torch"))
 
 from src.cmd import cli
-from src.lib.asr import TranscriptionResult
+from src.lib.asr import TranscriptionResult, TranscriptionSegment
 
 
 class FakeStdin(types.SimpleNamespace):
@@ -39,36 +39,74 @@ class _FakeBuffer(io.BytesIO):
 
 
 class CliStreamingWindowTests(unittest.TestCase):
-    def test_streaming_transcription_uses_fixed_window_for_pcm(self) -> None:
+    def test_streaming_transcription_commits_segments(self) -> None:
         sr = 16000
         window_seconds = 0.01
         window_samples = int(sr * window_seconds)
-        samples = np.arange(window_samples * 3, dtype=np.int16)
+        samples = np.arange(window_samples * 2, dtype=np.int16)
         fake_stdin = FakeStdin(samples.tobytes())
-        captured: dict[str, bytes] = {}
 
-        def fake_transcribe_all_bytes(payloads, **kwargs):
-            captured["payload"] = payloads[0]
-            return [TranscriptionResult(filename="stdin", text="ok")]
+        call_count = {"count": 0}
 
-        with mock.patch.object(sys, "stdin", fake_stdin):
-            cli._streaming_transcription(
-                model_name="fake",
-                language="ja",
-                task=None,
-                name="stdin",
-                chunk_size=window_samples * 2,
-                interval=0.0,
-                transcribe_all_bytes_fn=fake_transcribe_all_bytes,
-                decode_options={},
-                emit_stdout=False,
-                window_seconds=window_seconds,
-                stream_input="pcm",
-                stream_sample_rate=sr,
-            )
+        def fake_transcribe_waveform(waveform, *, options, name):
+            call_count["count"] += 1
+            text = "A" if call_count["count"] == 1 else "B"
+            segment = TranscriptionSegment(start=0.0, end=0.005, text=text)
+            return TranscriptionResult(filename=name, text=text, segments=[segment], language="ja")
 
-        with closing(wave.open(io.BytesIO(captured["payload"]), "rb")) as wav:
-            self.assertLessEqual(wav.getnframes(), window_samples)
+        pipeline = importlib.import_module("src.lib.asr.pipeline")
+        with mock.patch.object(pipeline, "transcribe_waveform", side_effect=fake_transcribe_waveform):
+            with mock.patch.object(sys, "stdin", fake_stdin):
+                results = cli._streaming_transcription(
+                    model_name="fake",
+                    language="ja",
+                    task=None,
+                    name="stdin",
+                    chunk_size=window_samples * 2,
+                    interval=0.0,
+                    transcribe_all_bytes_fn=lambda *args, **kwargs: [],
+                    decode_options={},
+                    emit_stdout=False,
+                    window_seconds=window_seconds,
+                    lookback_seconds=0.0,
+                    stream_input="pcm",
+                    stream_sample_rate=sr,
+                )
+
+        self.assertEqual(results[0].text, "AB")
+
+    def test_streaming_transcription_sets_condition_default(self) -> None:
+        sr = 16000
+        window_seconds = 0.01
+        window_samples = int(sr * window_seconds)
+        samples = np.zeros(window_samples, dtype=np.int16)
+        fake_stdin = FakeStdin(samples.tobytes())
+        captured: dict[str, bool] = {}
+
+        def fake_transcribe_waveform(waveform, *, options, name):
+            captured["condition"] = options.decode_options.get("condition_on_previous_text")
+            return TranscriptionResult(filename=name, text="", segments=[], language="ja")
+
+        pipeline = importlib.import_module("src.lib.asr.pipeline")
+        with mock.patch.object(pipeline, "transcribe_waveform", side_effect=fake_transcribe_waveform):
+            with mock.patch.object(sys, "stdin", fake_stdin):
+                cli._streaming_transcription(
+                    model_name="fake",
+                    language="ja",
+                    task=None,
+                    name="stdin",
+                    chunk_size=window_samples * 2,
+                    interval=0.0,
+                    transcribe_all_bytes_fn=lambda *args, **kwargs: [],
+                    decode_options={},
+                    emit_stdout=False,
+                    window_seconds=window_seconds,
+                    lookback_seconds=0.0,
+                    stream_input="pcm",
+                    stream_sample_rate=sr,
+                )
+
+        self.assertFalse(captured["condition"])
 
 
 if __name__ == "__main__":

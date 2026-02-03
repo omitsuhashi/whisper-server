@@ -876,17 +876,19 @@ def _streaming_transcription(
 
     from mlx_whisper.audio import SAMPLE_RATE
 
+    from src.lib.asr.options import TranscribeOptions
+    from src.lib.asr.pipeline import transcribe_waveform
+    from src.lib.asr.streaming_commit import SegmentCommitter
     from src.lib.asr.streaming_input import PcmRingBuffer, PcmStreamReader, open_ffmpeg_pcm_stream
-    from src.lib.audio.utils import encode_waveform_to_wav_bytes
 
     stdin_buffer = sys.stdin.buffer
-    last_emit_text = ""
     last_flush = time.monotonic()
-    results: list[TranscriptionResult] = []
+    final_result: TranscriptionResult | None = None
 
     target_sample_rate = int(SAMPLE_RATE)
     window_seconds = max(float(window_seconds or 0.0), 0.0)
     window_samples = max(1, int(target_sample_rate * window_seconds)) if window_seconds > 0 else 0
+    lookback_seconds = max(float(lookback_seconds or 0.0), 0.0)
 
     proc = None
     pcm_stream = stdin_buffer
@@ -905,31 +907,38 @@ def _streaming_transcription(
         target_sample_rate=target_sample_rate,
     )
     ring = PcmRingBuffer(max_samples=window_samples)
+    committer = SegmentCommitter(lookback_seconds=lookback_seconds)
 
-    def flush() -> None:
-        nonlocal last_emit_text, results
+    asr_decode = dict(decode_options or {})
+    asr_decode.setdefault("condition_on_previous_text", False)
+    options = TranscribeOptions(
+        model_name=model_name,
+        language=language,
+        task=task,
+        decode_options=asr_decode,
+    )
+
+    def flush(*, final: bool) -> None:
+        nonlocal final_result
         if ring.samples.size == 0:
             return
-        wav_bytes = encode_waveform_to_wav_bytes(ring.samples, sample_rate=target_sample_rate)
-        current_results = transcribe_all_bytes_fn(
-            [wav_bytes],
-            model_name=model_name,
-            language=language,
-            task=task,
-            names=[name],
-            **(decode_options or {}),
+        now_total_seconds = float(ring.total_samples) / float(target_sample_rate)
+        window_start_seconds = max(
+            0.0,
+            now_total_seconds - (float(ring.samples.size) / float(target_sample_rate)),
         )
-        if not current_results:
-            return
-        results = current_results
-        current_text = current_results[0].text
-
-        if emit_stdout and len(current_text) > len(last_emit_text):
-            new_text = current_text[len(last_emit_text) :]
-            if new_text:
-                sys.stdout.write(new_text)
-                sys.stdout.flush()
-        last_emit_text = current_text
+        result = transcribe_waveform(ring.samples, options=options, name=name)
+        new_text = committer.update(
+            result,
+            window_start_seconds=window_start_seconds,
+            now_total_seconds=now_total_seconds,
+            final=final,
+        )
+        if emit_stdout and new_text:
+            sys.stdout.write(new_text)
+            sys.stdout.flush()
+        if final:
+            final_result = committer.build_result(filename=name, language=language)
 
     try:
         while True:
@@ -940,7 +949,7 @@ def _streaming_transcription(
                 ring.append(waveform)
             now = time.monotonic()
             if interval <= 0 or (now - last_flush) >= interval:
-                flush()
+                flush(final=False)
                 last_flush = now
     except KeyboardInterrupt:
         if ring.samples.size:
@@ -951,12 +960,12 @@ def _streaming_transcription(
         if proc is not None:
             proc.terminate()
 
-    flush()
-    if results:
-        if emit_stdout:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        return results
+    flush(final=True)
+    if emit_stdout:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    if final_result is not None:
+        return [final_result]
     raise ValueError("標準入力から音声データを読み取れませんでした。")
 
 
