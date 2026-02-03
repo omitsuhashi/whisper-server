@@ -243,6 +243,30 @@ def _configure_stream_parser(parser: argparse.ArgumentParser) -> None:
         help="指定秒数ごとに書き起こしを更新して標準出力へ追記する (0 の場合は最後にまとめて出力)",
     )
     parser.add_argument(
+        "--stream-window-seconds",
+        type=float,
+        default=25.0,
+        help="stream-interval 時に ASR へ渡す最大 window 秒（固定上限）",
+    )
+    parser.add_argument(
+        "--stream-lookback-seconds",
+        type=float,
+        default=1.0,
+        help="確定を遅らせる lookback 秒（末尾の揺れ吸収）。確定ロジックは内部で使用",
+    )
+    parser.add_argument(
+        "--stream-input",
+        choices=["auto", "pcm"],
+        default="auto",
+        help="入力形式: auto=ffmpeg で decode, pcm=raw s16le mono をそのまま読む",
+    )
+    parser.add_argument(
+        "--stream-sample-rate",
+        type=int,
+        default=16000,
+        help="--stream-input=pcm の入力サンプルレート(Hz)",
+    )
+    parser.add_argument(
         "--stream-chunk-size",
         type=int,
         default=0,
@@ -464,6 +488,10 @@ def _handle_stream_command(args: argparse.Namespace) -> CommandResult:
             transcribe_all_bytes_fn=transcribe_all_bytes_fn,
             decode_options=decode_options,
             emit_stdout=True,
+            window_seconds=args.stream_window_seconds,
+            lookback_seconds=args.stream_lookback_seconds,
+            stream_input=args.stream_input,
+            stream_sample_rate=args.stream_sample_rate,
         )
 
     audio_buffer = bytearray()
@@ -839,24 +867,52 @@ def _streaming_transcription(
     transcribe_all_bytes_fn,
     decode_options: dict[str, Any] | None = None,
     emit_stdout: bool = False,
+    window_seconds: float = 25.0,
+    lookback_seconds: float = 1.0,
+    stream_input: str = "auto",
+    stream_sample_rate: int = 16000,
 ) -> list["TranscriptionResult"]:
     """標準入力からのストリームを一定間隔で書き起こして標準出力へ追記する。"""
 
+    from mlx_whisper.audio import SAMPLE_RATE
+
+    from src.lib.asr.streaming_input import PcmRingBuffer, PcmStreamReader, open_ffmpeg_pcm_stream
+    from src.lib.audio.utils import encode_waveform_to_wav_bytes
+
     stdin_buffer = sys.stdin.buffer
-    audio_buffer = bytearray()
     last_emit_text = ""
     last_flush = time.monotonic()
     results: list[TranscriptionResult] = []
 
-    def flush(force: bool = False) -> None:
-        nonlocal last_emit_text, results
-        if not audio_buffer:
-            return
-        if not force and (time.monotonic() - last_flush) < interval:
-            return
+    target_sample_rate = int(SAMPLE_RATE)
+    window_seconds = max(float(window_seconds or 0.0), 0.0)
+    window_samples = max(1, int(target_sample_rate * window_seconds)) if window_seconds > 0 else 0
 
+    proc = None
+    pcm_stream = stdin_buffer
+    input_sample_rate = target_sample_rate
+    if (stream_input or "").lower() == "auto":
+        try:
+            proc, pcm_stream = open_ffmpeg_pcm_stream(stdin_buffer, target_sample_rate=target_sample_rate)
+        except FileNotFoundError as exc:
+            raise RuntimeError("ffmpeg が見つかりません。ストリームをデコードできませんでした。") from exc
+    else:
+        input_sample_rate = int(stream_sample_rate or target_sample_rate)
+
+    reader = PcmStreamReader(
+        pcm_stream,
+        sample_rate=input_sample_rate,
+        target_sample_rate=target_sample_rate,
+    )
+    ring = PcmRingBuffer(max_samples=window_samples)
+
+    def flush() -> None:
+        nonlocal last_emit_text, results
+        if ring.samples.size == 0:
+            return
+        wav_bytes = encode_waveform_to_wav_bytes(ring.samples, sample_rate=target_sample_rate)
         current_results = transcribe_all_bytes_fn(
-            [bytes(audio_buffer)],
+            [wav_bytes],
             model_name=model_name,
             language=language,
             task=task,
@@ -877,21 +933,25 @@ def _streaming_transcription(
 
     try:
         while True:
-            chunk = stdin_buffer.read(chunk_size)
-            if not chunk:
+            waveform, eof = reader.read_waveform(chunk_size)
+            if eof:
                 break
-            audio_buffer.extend(chunk)
+            if waveform.size > 0:
+                ring.append(waveform)
             now = time.monotonic()
-            if (now - last_flush) >= interval:
-                flush(force=True)
+            if interval <= 0 or (now - last_flush) >= interval:
+                flush()
                 last_flush = now
     except KeyboardInterrupt:
-        if audio_buffer:
-            logger.debug("stream_interrupt: buffered_bytes=%d", len(audio_buffer))
+        if ring.samples.size:
+            logger.debug("stream_interrupt: buffered_samples=%d", ring.samples.size)
         else:
             raise
+    finally:
+        if proc is not None:
+            proc.terminate()
 
-    flush(force=True)
+    flush()
     if results:
         if emit_stdout:
             sys.stdout.write("\n")
