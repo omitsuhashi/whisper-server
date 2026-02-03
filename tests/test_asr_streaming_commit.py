@@ -67,6 +67,26 @@ class TestStreamingCommitter(unittest.TestCase):
         self.assertEqual(len(committer.committed_segments), 1)
         self.assertAlmostEqual(committer.committed_until, 2.0, places=6)
 
+    def test_build_result_uses_committed_until_after_skip(self) -> None:
+        committer = SegmentCommitter(lookback_seconds=0.0)
+        first = make_result([TranscriptionSegment(start=0.0, end=1.0, text="Hi")])
+        committer.update(
+            first,
+            window_start_seconds=0.0,
+            now_total_seconds=1.0,
+            final=True,
+        )
+        second = make_result([TranscriptionSegment(start=0.1, end=0.9, text="Hi")])
+        committer.update(
+            second,
+            window_start_seconds=1.1,
+            now_total_seconds=2.0,
+            final=True,
+        )
+        built = committer.build_result(filename="pcm", language="ja")
+        self.assertEqual(built.duration, 2.0)
+        self.assertEqual(len(built.segments), 1)
+
     def test_build_result_uses_committed_text_and_duration(self) -> None:
         committer = SegmentCommitter(lookback_seconds=0.0)
         result = make_result([TranscriptionSegment(start=0.0, end=1.0, text="A")])

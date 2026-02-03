@@ -57,7 +57,7 @@ class SegmentCommitter:
         return new_text
 
     def build_result(self, *, filename: str, language: Optional[str]) -> TranscriptionResult:
-        duration = self.committed_segments[-1].end if self.committed_segments else 0.0
+        duration = float(self.committed_until)
         return TranscriptionResult(
             filename=filename,
             text=self.committed_text.strip(),
