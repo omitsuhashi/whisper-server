@@ -24,6 +24,9 @@ class SegmentCommitter:
         cutoff = float(now_total_seconds) if final else max(
             0.0, float(now_total_seconds) - float(self.lookback_seconds)
         )
+        effective_cutoff = cutoff
+        if not final and effective_cutoff <= float(window_start_seconds):
+            effective_cutoff = float("inf")
 
         abs_segments: List[TranscriptionSegment] = []
         for seg in (result.segments or []):
@@ -35,7 +38,7 @@ class SegmentCommitter:
         abs_segments.sort(key=lambda s: (float(s.end), float(s.start)))
         newly_committed: List[TranscriptionSegment] = []
         for seg in abs_segments:
-            if float(seg.end) > cutoff:
+            if float(seg.end) > effective_cutoff:
                 continue
             if float(seg.end) <= float(self.committed_until) + 1e-6:
                 continue
