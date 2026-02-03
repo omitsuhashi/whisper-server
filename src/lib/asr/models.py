@@ -51,6 +51,8 @@ class TranscriptionResult(BaseModel):
     text: str = ""
     language: str | None = None
     duration: float | None = None
+    window_start_seconds: float | None = None
+    window_end_seconds: float | None = None
     segments: List[TranscriptionSegment] = Field(default_factory=list)
     diagnostics: TranscriptionDiagnostics | None = None
 

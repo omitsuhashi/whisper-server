@@ -24,6 +24,7 @@ from src.lib.asr.pipeline import transcribe_waveform
 from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
 from src.lib.asr.prompting import build_prompt_from_metadata, normalize_prompt_items
 from src.lib.asr.quality import analyze_transcription_quality
+from src.lib.asr.windowing import slice_waveform_by_seconds
 from src.lib.audio import (
     AudioDecodeError,
     InvalidAudioError,
@@ -397,6 +398,8 @@ def create_app() -> FastAPI:
         task: Optional[str] = Form(None),
         chunk_seconds: Optional[float] = Form(None),
         overlap_seconds: Optional[float] = Form(None),
+        window_start_seconds: Optional[float] = Form(None),
+        window_end_seconds: Optional[float] = Form(None),
         prompt_agenda: Optional[str] = Form(None),
         prompt_participants: Optional[str] = Form(None),
         prompt_products: Optional[str] = Form(None),
@@ -459,8 +462,18 @@ def create_app() -> FastAPI:
             )
             raise HTTPException(status_code=400, detail=detail) from exc
 
+        windowed = slice_waveform_by_seconds(
+            waveform,
+            sample_rate=int(SAMPLE_RATE),
+            start_seconds=window_start_seconds,
+            end_seconds=window_end_seconds,
+        )
+        waveform = windowed.waveform
+        window_start_seconds = windowed.start_seconds
+        window_end_seconds = windowed.end_seconds
+
         logger.info(
-            "transcribe_pcm_start mode=%s file=%s bytes=%d sample_rate=%d model=%s language=%s task=%s chunk=%s overlap=%s terms=%d dict=%d prompt_chars=%d",
+            "transcribe_pcm_start mode=%s file=%s bytes=%d sample_rate=%d model=%s language=%s task=%s chunk=%s overlap=%s terms=%d dict=%d prompt_chars=%d win_start=%s win_end=%s",
             mode,
             filename,
             len(pcm_bytes),
@@ -473,6 +486,8 @@ def create_app() -> FastAPI:
             inputs.prompt_terms_count,
             inputs.prompt_dict_count,
             inputs.prompt_chars,
+            window_start_seconds,
+            window_end_seconds,
         )
 
         options = TranscribeOptions(
@@ -530,7 +545,13 @@ def create_app() -> FastAPI:
         )
         enabled = _filler_enabled(mode)
         result = apply_filler_removal(result, enabled=enabled)
-        result = result.model_copy(update={"diagnostics": analyze_transcription_quality(result)})
+        result = result.model_copy(
+            update={
+                "diagnostics": analyze_transcription_quality(result),
+                "window_start_seconds": window_start_seconds,
+                "window_end_seconds": window_end_seconds,
+            }
+        )
         return [result]
 
     return app
