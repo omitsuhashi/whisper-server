@@ -41,6 +41,27 @@ class ConditionFallbackTests(unittest.TestCase):
 
     @mock.patch("src.lib.asr.pipeline._memsnap")
     @mock.patch("src.lib.asr.pipeline.transcribe")
+    def test_no_retry_when_condition_flag_false(self, mock_transcribe: mock.Mock, mock_memsnap: mock.Mock) -> None:
+        loop_payload = {
+            "text": "foo bar foo bar foo bar foo bar",
+            "segments": [{"text": "foo bar"} for _ in range(6)],
+            "language": "ja",
+        }
+        mock_transcribe.return_value = loop_payload
+
+        result = _transcribe_single(
+            audio_input=b"",
+            display_name="loop.wav",
+            model_name="demo",
+            transcribe_kwargs={"condition_on_previous_text": False},
+            language_hint="ja",
+        )
+
+        self.assertEqual(mock_transcribe.call_count, 1)
+        self.assertEqual(result.text, loop_payload["text"])
+
+    @mock.patch("src.lib.asr.pipeline._memsnap")
+    @mock.patch("src.lib.asr.pipeline.transcribe")
     def test_transcribe_falls_back_without_condition(self, mock_transcribe: mock.Mock, mock_memsnap: mock.Mock) -> None:
         loop_payload = {
             "text": "foo bar foo bar foo bar foo bar",
