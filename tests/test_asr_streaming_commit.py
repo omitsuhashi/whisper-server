@@ -100,3 +100,17 @@ class TestStreamingCommitter(unittest.TestCase):
         self.assertEqual(built.text, "A")
         self.assertEqual(built.duration, 1.0)
         self.assertEqual(len(built.segments), 1)
+
+    def test_commit_clamps_cutoff_to_window_start(self) -> None:
+        committer = SegmentCommitter(lookback_seconds=30.0)
+        result = make_result([TranscriptionSegment(start=0.0, end=5.0, text="A")])
+
+        new_text = committer.update(
+            result,
+            window_start_seconds=90.0,
+            now_total_seconds=100.0,
+            final=False,
+        )
+
+        self.assertEqual(new_text, "A")
+        self.assertEqual(len(committer.committed_segments), 1)
