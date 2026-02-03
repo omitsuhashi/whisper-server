@@ -4,11 +4,8 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import os
-import shutil
-import tempfile
 import time
 import uuid
-from pathlib import Path
 from typing import Optional, Any
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 
@@ -16,27 +13,18 @@ from mlx_whisper.audio import SAMPLE_RATE
 
 from src.config.defaults import DEFAULT_LANGUAGE, DEFAULT_MODEL_NAME
 from src.config.logging import setup_logging
-from src.lib.asr import TranscriptionResult, transcribe_all
-from src.lib.asr.chunking import transcribe_paths_chunked, transcribe_waveform_chunked
+from src.lib.asr import TranscriptionResult
+from src.lib.asr.chunking import transcribe_waveform_chunked
 from src.lib.asr.filler import apply_filler_removal
 from src.lib.asr.options import TranscribeOptions
 from src.lib.asr.pipeline import transcribe_waveform
-from src.lib.asr.service import resolve_model_and_language, transcribe_prepared_audios
+from src.lib.asr.service import resolve_model_and_language
 from src.lib.asr.prompting import build_prompt_from_metadata, normalize_prompt_items
 from src.lib.asr.quality import analyze_transcription_quality
 from src.lib.asr.windowing import slice_waveform_by_seconds
-from src.lib.audio import (
-    AudioDecodeError,
-    InvalidAudioError,
-    PreparedAudio,
-    decode_pcm_s16le_bytes,
-    dump_audio_for_debug,
-    infer_suffix,
-    prepare_audio,
-)
+from src.lib.audio import AudioDecodeError, decode_pcm_s16le_bytes
 from src.lib.diagnostics.request_context import set_request_context, reset_request_context
 from src.lib.diagnostics.memwatch import ensure_memory_watchdog
-from src.lib.asr.subproc import transcribe_paths_via_worker
 
 logger = logging.getLogger(__name__)
 
@@ -204,189 +192,6 @@ def create_app() -> FastAPI:
         """死活監視用エンドポイント。"""
 
         return {"status": "ok"}
-
-    @app.post("/transcribe", response_model=list[TranscriptionResult])
-    async def transcribe_endpoint(  # noqa: PLR0912 - 例外処理で分岐が増える
-        request: Request,
-        files: list[UploadFile] = File(...),
-        model: str = Form(DEFAULT_MODEL_NAME),
-        language: Optional[str] = Form(None),
-        task: Optional[str] = Form(None),
-        chunk_seconds: Optional[float] = Form(None),
-        overlap_seconds: Optional[float] = Form(None),
-        prompt_agenda: Optional[str] = Form(None),
-        prompt_participants: Optional[str] = Form(None),
-        prompt_products: Optional[str] = Form(None),
-        prompt_style: Optional[str] = Form(None),
-        prompt_terms: Optional[str] = Form(None),
-        prompt_dictionary: Optional[str] = Form(None),
-    ) -> list[TranscriptionResult]:
-        """アップロードされた音声群を書き起こして返す。"""
-
-        mode = getattr(request.state, "whisper_mode", "-")
-        started = time.monotonic()
-
-        if not files:
-            raise HTTPException(status_code=400, detail="音声ファイルが指定されていません")
-
-        inputs = _resolve_transcribe_inputs(
-            model=model,
-            language=language,
-            task=task,
-            chunk_seconds=chunk_seconds,
-            overlap_seconds=overlap_seconds,
-            prompt_agenda=prompt_agenda,
-            prompt_participants=prompt_participants,
-            prompt_products=prompt_products,
-            prompt_style=prompt_style,
-            prompt_terms=prompt_terms,
-            prompt_dictionary=prompt_dictionary,
-        )
-
-        logger.debug(
-            "transcribe_request: files=%s model=%s language=%s task=%s",
-            [upload.filename for upload in files],
-            model or DEFAULT_MODEL_NAME,
-            language or DEFAULT_LANGUAGE,
-            task,
-        )
-
-        logger.info(
-            "transcribe_start mode=%s files=%d model=%s language=%s task=%s chunk=%s overlap=%s terms=%d dict=%d prompt_chars=%d",
-            mode,
-            len(files),
-            inputs.model_name,
-            inputs.language,
-            inputs.task,
-            inputs.chunk_seconds,
-            inputs.overlap_seconds,
-            inputs.prompt_terms_count,
-            inputs.prompt_dict_count,
-            inputs.prompt_chars,
-        )
-
-        entries: list[PreparedAudio] = []
-        asr_start = None
-        try:
-            for upload in files:
-                suffix = infer_suffix(upload.filename)
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    shutil.copyfileobj(upload.file, tmp)
-                tmp_path = Path(tmp.name)
-                try:
-                    prepared = prepare_audio(tmp_path, upload.filename)
-                except InvalidAudioError as exc:
-                    dump_audio_for_debug(tmp_path, upload.filename)
-                    logger.warning(
-                        "transcribe_failed kind=invalid_audio file=%s",
-                        upload.filename,
-                    )
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-                if prepared.silent:
-                    logger.info("transcribe_silence_detected: %s", prepared.display_name)
-
-                entries.append(prepared)
-
-            logger.debug(
-                "transcribe_chunking: chunk_seconds=%s overlap_seconds=%s",
-                inputs.chunk_seconds,
-                inputs.overlap_seconds,
-            )
-
-            transcribe_all_fn = None
-
-            if os.getenv("ASR_HTTP_SUBPROCESS", "1").lower() in {"1", "true", "on", "yes"}:
-
-                def _transcribe_subprocess(paths, *, model_name, language, task, **decode_kwargs):
-                    return transcribe_paths_via_worker(
-                        paths,
-                        model_name=model_name,
-                        language=language,
-                        task=task,
-                        chunk_seconds=float(inputs.chunk_seconds),
-                        overlap_seconds=float(inputs.overlap_seconds),
-                        **decode_kwargs,
-                    )
-
-                transcribe_all_fn = _transcribe_subprocess
-            elif inputs.chunk_seconds > 0:
-
-                def _transcribe_chunked(paths, *, model_name, language, task, **decode_kwargs):
-                    return transcribe_paths_chunked(
-                        paths,
-                        model_name=model_name,
-                        language=language,
-                        task=task,
-                        chunk_seconds=float(inputs.chunk_seconds),
-                        overlap_seconds=float(inputs.overlap_seconds),
-                        **decode_kwargs,
-                    )
-
-                transcribe_all_fn = _transcribe_chunked
-
-            asr_start = time.monotonic()
-            updated = await asyncio.to_thread(
-                transcribe_prepared_audios,
-                entries,
-                model_name=inputs.model_name,
-                language=inputs.language,
-                task=inputs.task,
-                transcribe_all_fn=transcribe_all_fn,
-                decode_options=inputs.decode_options,
-            )
-
-        except (FileNotFoundError, InvalidAudioError) as exc:
-            logger.warning("transcribe_failed kind=invalid_audio detail=%s", str(exc))
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
-            logger.exception("transcribe_failed kind=server_error files=%s", [f.filename for f in files])
-            raise HTTPException(status_code=500, detail="書き起こしに失敗しました") from exc
-        finally:
-            for entry in entries:
-                entry.path.unlink(missing_ok=True)
-
-        asr_end = time.monotonic()
-        asr_started = asr_start or started
-        prep_ms = int((asr_started - started) * 1000)
-        asr_ms = int((asr_end - asr_started) * 1000)
-        total_ms = int((asr_end - started) * 1000)
-        segments_total = sum(len(res.segments) for res in updated)
-        duration_total = sum(_coerce_duration(res.duration) for res in updated)
-
-        logger.info(
-            "transcribe_done mode=%s files=%d results=%d segments=%d duration_sec=%.3f prep_ms=%d asr_ms=%d total_ms=%d",
-            mode,
-            len(files),
-            len(updated),
-            segments_total,
-            duration_total,
-            prep_ms,
-            asr_ms,
-            total_ms,
-        )
-
-        logger.debug(
-            "transcribe_response: %s",
-            [
-                {
-                    "filename": res.filename,
-                    "segments": len(res.segments),
-                    "language": res.language,
-                    "duration": res.duration,
-                }
-                for res in updated
-            ],
-        )
-
-        if _filler_enabled(mode):
-            updated = [apply_filler_removal(res, enabled=True) for res in updated]
-        updated = [
-            res.model_copy(update={"diagnostics": analyze_transcription_quality(res)})
-            for res in updated
-        ]
-
-        return updated
 
     @app.post("/transcribe_pcm", response_model=list[TranscriptionResult])
     async def transcribe_pcm_endpoint(
