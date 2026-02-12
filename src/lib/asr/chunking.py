@@ -88,10 +88,10 @@ def _text_similarity(left: str, right: str) -> float:
     return float(SequenceMatcher(a=left, b=right).ratio())
 
 
-def _segment_edge_margin(start: float, end: float, *, window_start: float, window_end: float) -> float:
+def _segment_edge_distances(start: float, end: float, *, window_start: float, window_end: float) -> tuple[float, float]:
     left = max(0.0, float(start) - float(window_start))
     right = max(0.0, float(window_end) - float(end))
-    return min(left, right)
+    return left, right
 
 
 def _resolve_contained_match_edge_margin_seconds() -> float:
@@ -184,7 +184,7 @@ def _merge_results(
     filename: str,
     language: Optional[str],
 ) -> TranscriptionResult:
-    segments_with_margin: List[tuple[TranscriptionSegment, float]] = []
+    segments_with_margin: List[tuple[TranscriptionSegment, float, bool, bool]] = []
     contained_match_edge_margin_seconds = _resolve_contained_match_edge_margin_seconds()
     total_input = 0
     total_clipped = 0
@@ -199,6 +199,8 @@ def _merge_results(
         raw_end_sec = raw_end / float(_SR)
         window_start = main_start / float(_SR)
         window_end = main_end / float(_SR)
+        has_left_overlap = raw_start < main_start
+        has_right_overlap = raw_end > main_end
         window_input = 0
         window_clipped = 0
         window_kept = 0
@@ -227,21 +229,30 @@ def _merge_results(
                     "temperature": _seg_get(seg, "temperature"),
                 }
             )
-            edge_margin = _segment_edge_margin(
+            left_margin, right_margin = _segment_edge_distances(
                 new_start,
                 new_end,
                 window_start=window_start,
                 window_end=window_end,
             )
+            edge_margin = min(left_margin, right_margin)
+            boundary_edge = (
+                (has_left_overlap and left_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS)
+                or (has_right_overlap and right_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS)
+            )
+            contained_edge = (
+                (has_left_overlap and left_margin <= contained_match_edge_margin_seconds)
+                or (has_right_overlap and right_margin <= contained_match_edge_margin_seconds)
+            )
             if segments_with_margin:
-                last, last_edge_margin = segments_with_margin[-1]
+                last, last_edge_margin, last_boundary_edge, last_contained_edge = segments_with_margin[-1]
                 is_boundary_candidate = (
-                    last_edge_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS
-                    or edge_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS
+                    last_boundary_edge
+                    or boundary_edge
                 )
                 allow_contained_match = (
-                    last_edge_margin <= contained_match_edge_margin_seconds
-                    or edge_margin <= contained_match_edge_margin_seconds
+                    last_contained_edge
+                    or contained_edge
                 )
                 duplicate_like, similarity = _segment_relation(
                     last,
@@ -252,7 +263,7 @@ def _merge_results(
                 if duplicate_like:
                     replaced = _prefer_new_segment(last, last_edge_margin, new_segment, edge_margin)
                     if replaced:
-                        segments_with_margin[-1] = (new_segment, edge_margin)
+                        segments_with_margin[-1] = (new_segment, edge_margin, boundary_edge, contained_edge)
                         total_dedup_replaced += 1
                         window_dedup_replaced += 1
                     else:
@@ -268,7 +279,7 @@ def _merge_results(
                         continue
                     # 置換済みのため append は不要
                     continue
-            segments_with_margin.append((new_segment, edge_margin))
+            segments_with_margin.append((new_segment, edge_margin, boundary_edge, contained_edge))
             total_kept += 1
             window_kept += 1
         logger.debug(
@@ -295,7 +306,7 @@ def _merge_results(
         total_dedup_replaced,
     )
 
-    segments: List[TranscriptionSegment] = [seg for seg, _ in segments_with_margin]
+    segments: List[TranscriptionSegment] = [seg for seg, _, _, _ in segments_with_margin]
 
     segments.sort(key=lambda s: (float(getattr(s, "start", 0.0)), float(getattr(s, "end", 0.0))))
     text_parts: List[str] = []

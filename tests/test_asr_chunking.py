@@ -119,6 +119,25 @@ class TestAsrChunking(unittest.TestCase):
         self.assertEqual(len(merged.segments), 2)
         self.assertEqual(merged.text, "はいはい、お願いします")
 
+    def test_merge_keeps_contained_phrases_near_non_overlap_window_edge(self) -> None:
+        sample_rate = 16000
+        windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=0.05, end=0.2, text="はい"),
+                    TranscriptionSegment(start=0.25, end=0.9, text="はい、お願いします"),
+                ],
+            )
+        ]
+
+        merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertEqual(len(merged.segments), 2)
+        self.assertEqual(merged.text, "はいはい、お願いします")
+
     def test_merge_does_not_dedup_similar_text_in_window_center(self) -> None:
         sample_rate = 16000
         windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
