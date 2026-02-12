@@ -100,6 +100,25 @@ class TestAsrChunking(unittest.TestCase):
         self.assertEqual(len(merged.segments), 1)
         self.assertEqual(merged.segments[0].text, "きょうは天気です")
 
+    def test_merge_keeps_contained_phrases_inside_same_window(self) -> None:
+        sample_rate = 16000
+        windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=10.0, end=10.2, text="はい"),
+                    TranscriptionSegment(start=10.25, end=10.9, text="はい、お願いします"),
+                ],
+            )
+        ]
+
+        merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertEqual(len(merged.segments), 2)
+        self.assertEqual(merged.text, "はいはい、お願いします")
+
     def test_merge_logs_summary(self) -> None:
         sample_rate = 16000
         windows = [(0, sample_rate * 10, 0, sample_rate * 10)]

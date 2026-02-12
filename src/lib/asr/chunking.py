@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 ChunkWindow = Tuple[int, int, int, int]
 _DEFAULT_VAD_CONFIG = resolve_vad_config()
 _DEFAULT_DUPLICATE_GAP_SECONDS = 0.5
+_CONTAINED_MATCH_EDGE_MARGIN_SECONDS = 0.35
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -91,7 +92,12 @@ def _segment_edge_margin(start: float, end: float, *, window_start: float, windo
     return min(left, right)
 
 
-def _segment_relation(prev: TranscriptionSegment, new: TranscriptionSegment) -> tuple[bool, float]:
+def _segment_relation(
+    prev: TranscriptionSegment,
+    new: TranscriptionSegment,
+    *,
+    allow_contained_match: bool,
+) -> tuple[bool, float]:
     prev_start = float(getattr(prev, "start", 0.0))
     prev_end = float(getattr(prev, "end", prev_start))
     new_start = float(getattr(new, "start", 0.0))
@@ -114,7 +120,7 @@ def _segment_relation(prev: TranscriptionSegment, new: TranscriptionSegment) -> 
             duplicate_like = True
         elif sim >= 0.72 and gap <= 0.35:
             duplicate_like = True
-        elif contained and gap <= 0.35:
+        elif allow_contained_match and contained and gap <= 0.35:
             duplicate_like = True
         elif overlap_ratio >= 0.8 and gap <= 0.2:
             duplicate_like = True
@@ -212,7 +218,15 @@ def _merge_results(
             )
             if segments_with_margin:
                 last, last_edge_margin = segments_with_margin[-1]
-                duplicate_like, similarity = _segment_relation(last, new_segment)
+                allow_contained_match = (
+                    last_edge_margin <= _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+                    or edge_margin <= _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+                )
+                duplicate_like, similarity = _segment_relation(
+                    last,
+                    new_segment,
+                    allow_contained_match=allow_contained_match,
+                )
                 if duplicate_like:
                     replaced = _prefer_new_segment(last, last_edge_margin, new_segment, edge_margin)
                     if replaced:
