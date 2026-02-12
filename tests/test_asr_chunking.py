@@ -1,0 +1,139 @@
+import sys
+import types
+import unittest
+from unittest import mock
+
+import numpy as np
+
+# mlx_whisper stub
+original_mlx = sys.modules.get("mlx_whisper")
+mlx_stub = types.ModuleType("mlx_whisper")
+mlx_stub.transcribe = lambda *args, **kwargs: None
+sys.modules["mlx_whisper"] = mlx_stub
+
+from src.lib.asr.chunking import _merge_results, transcribe_waveform_chunked
+from src.lib.asr.models import TranscriptionResult, TranscriptionSegment
+from src.lib.asr.options import TranscribeOptions
+from src.lib.vad import SpeechSegment
+
+
+def _restore() -> None:
+    if original_mlx is not None:
+        sys.modules["mlx_whisper"] = original_mlx
+    else:
+        sys.modules.pop("mlx_whisper", None)
+
+
+class TestAsrChunking(unittest.TestCase):
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _restore()
+
+    @mock.patch("src.lib.asr.chunking.detect_voice_segments")
+    @mock.patch("src.lib.asr.chunking._phase_run_asr_waveform")
+    def test_vad_boundaries_have_margin(
+        self,
+        mock_run_asr: mock.Mock,
+        mock_detect: mock.Mock,
+    ) -> None:
+        sample_rate = 16000
+        waveform = np.zeros(sample_rate * 30, dtype=np.float32)
+        mock_detect.return_value = [
+            SpeechSegment(
+                start=10.0,
+                end=11.0,
+                start_sample=sample_rate * 10,
+                end_sample=sample_rate * 11,
+            )
+        ]
+
+        def _fake_run(chunk_windows, waveform_arg, *, filename, options):
+            self.assertEqual(len(chunk_windows), 1)
+            raw_start, raw_end, main_start, main_end = chunk_windows[0]
+            self.assertEqual(raw_start, sample_rate * 9)
+            self.assertEqual(raw_end, sample_rate * 12)
+            self.assertEqual(main_start, sample_rate * 9)
+            self.assertEqual(main_end, sample_rate * 12)
+            self.assertEqual(len(waveform_arg), len(waveform))
+            return [
+                TranscriptionResult(
+                    filename=f"{filename}#chunk1",
+                    text="",
+                    language="ja",
+                    duration=0.0,
+                    segments=[],
+                )
+            ]
+
+        mock_run_asr.side_effect = _fake_run
+        result = transcribe_waveform_chunked(
+            waveform,
+            options=TranscribeOptions(model_name="mock-model", language="ja"),
+            name="sample.pcm",
+            chunk_seconds=25.0,
+            overlap_seconds=1.0,
+        )
+        self.assertEqual(result.filename, "sample.pcm")
+
+    def test_merge_prefers_better_boundary_candidate(self) -> None:
+        sample_rate = 16000
+        windows = [
+            (0 * sample_rate, 26 * sample_rate, 0 * sample_rate, 25 * sample_rate),
+            (24 * sample_rate, 51 * sample_rate, 25 * sample_rate, 50 * sample_rate),
+        ]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(
+                        start=24.6,
+                        end=25.2,
+                        text="きょうわ天気です",
+                        avg_logprob=-1.4,
+                        no_speech_prob=0.62,
+                        compression_ratio=2.8,
+                    )
+                ],
+            ),
+            TranscriptionResult(
+                filename="chunk2",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(
+                        start=0.6,
+                        end=1.2,
+                        text="きょうは天気です",
+                        avg_logprob=-0.2,
+                        no_speech_prob=0.05,
+                        compression_ratio=1.2,
+                    )
+                ],
+            ),
+        ]
+
+        merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertEqual(merged.text, "きょうは天気です")
+        self.assertEqual(len(merged.segments), 1)
+        self.assertEqual(merged.segments[0].text, "きょうは天気です")
+
+    def test_merge_logs_summary(self) -> None:
+        sample_rate = 16000
+        windows = [(0, sample_rate * 10, 0, sample_rate * 10)]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[TranscriptionSegment(start=0.0, end=1.0, text="abc")],
+            )
+        ]
+        with self.assertLogs("src.lib.asr.chunking", level="DEBUG") as captured:
+            _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertTrue(any("chunk_merge_summary" in line for line in captured.output))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()
