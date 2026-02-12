@@ -113,6 +113,10 @@ def _segment_relation(
     *,
     is_boundary_candidate: bool,
     allow_contained_match: bool,
+    prev_raw_start: float,
+    prev_raw_end: float,
+    new_raw_start: float,
+    new_raw_end: float,
 ) -> tuple[bool, float]:
     prev_start = float(getattr(prev, "start", 0.0))
     prev_end = float(getattr(prev, "end", prev_start))
@@ -124,6 +128,8 @@ def _segment_relation(
     prev_dur = max(prev_end - prev_start, 1e-6)
     new_dur = max(new_end - new_start, 1e-6)
     overlap_ratio = max(0.0, overlap) / max(min(prev_dur, new_dur), 1e-6)
+    raw_overlap = min(float(prev_raw_end), float(new_raw_end)) - max(float(prev_raw_start), float(new_raw_start))
+    raw_overlap_ratio = max(0.0, raw_overlap) / max(min(prev_dur, new_dur), 1e-6)
 
     prev_text = _normalize_text(getattr(prev, "text", "") or "")
     new_text = _normalize_text(getattr(new, "text", "") or "")
@@ -134,9 +140,9 @@ def _segment_relation(
     if prev_text and new_text:
         if prev_text == new_text and gap <= _DEFAULT_DUPLICATE_GAP_SECONDS:
             duplicate_like = True
-        elif is_boundary_candidate and sim >= 0.72 and gap <= 0.35:
+        elif is_boundary_candidate and sim >= 0.72 and gap <= 0.35 and raw_overlap_ratio >= 0.8:
             duplicate_like = True
-        elif allow_contained_match and contained and gap <= 0.35:
+        elif allow_contained_match and contained and gap <= 0.35 and raw_overlap_ratio >= 0.8:
             duplicate_like = True
         elif is_boundary_candidate and overlap_ratio >= 0.8 and gap <= 0.2:
             duplicate_like = True
@@ -184,7 +190,7 @@ def _merge_results(
     filename: str,
     language: Optional[str],
 ) -> TranscriptionResult:
-    segments_with_margin: List[tuple[TranscriptionSegment, float, bool, bool]] = []
+    segments_with_margin: List[tuple[TranscriptionSegment, float, bool, bool, float, float]] = []
     contained_match_edge_margin_seconds = _resolve_contained_match_edge_margin_seconds()
     total_input = 0
     total_clipped = 0
@@ -211,6 +217,8 @@ def _merge_results(
             window_input += 1
             seg_start = float(_seg_get(seg, "start") or 0.0) + offset_sec
             seg_end = float(_seg_get(seg, "end") or seg_start) + offset_sec
+            raw_seg_start = seg_start
+            raw_seg_end = seg_end
             clipped = _clip_segment(seg_start, seg_end, window_start, window_end)
             if clipped is None:
                 total_clipped += 1
@@ -245,7 +253,14 @@ def _merge_results(
                 or (has_right_overlap and right_margin <= contained_match_edge_margin_seconds)
             )
             if segments_with_margin:
-                last, last_edge_margin, last_boundary_edge, last_contained_edge = segments_with_margin[-1]
+                (
+                    last,
+                    last_edge_margin,
+                    last_boundary_edge,
+                    last_contained_edge,
+                    last_raw_start,
+                    last_raw_end,
+                ) = segments_with_margin[-1]
                 is_boundary_candidate = (
                     last_boundary_edge
                     or boundary_edge
@@ -259,11 +274,22 @@ def _merge_results(
                     new_segment,
                     is_boundary_candidate=is_boundary_candidate,
                     allow_contained_match=allow_contained_match,
+                    prev_raw_start=last_raw_start,
+                    prev_raw_end=last_raw_end,
+                    new_raw_start=raw_seg_start,
+                    new_raw_end=raw_seg_end,
                 )
                 if duplicate_like:
                     replaced = _prefer_new_segment(last, last_edge_margin, new_segment, edge_margin)
                     if replaced:
-                        segments_with_margin[-1] = (new_segment, edge_margin, boundary_edge, contained_edge)
+                        segments_with_margin[-1] = (
+                            new_segment,
+                            edge_margin,
+                            boundary_edge,
+                            contained_edge,
+                            raw_seg_start,
+                            raw_seg_end,
+                        )
                         total_dedup_replaced += 1
                         window_dedup_replaced += 1
                     else:
@@ -279,7 +305,9 @@ def _merge_results(
                         continue
                     # 置換済みのため append は不要
                     continue
-            segments_with_margin.append((new_segment, edge_margin, boundary_edge, contained_edge))
+            segments_with_margin.append(
+                (new_segment, edge_margin, boundary_edge, contained_edge, raw_seg_start, raw_seg_end)
+            )
             total_kept += 1
             window_kept += 1
         logger.debug(
@@ -306,7 +334,7 @@ def _merge_results(
         total_dedup_replaced,
     )
 
-    segments: List[TranscriptionSegment] = [seg for seg, _, _, _ in segments_with_margin]
+    segments: List[TranscriptionSegment] = [seg for seg, _, _, _, _, _ in segments_with_margin]
 
     segments.sort(key=lambda s: (float(getattr(s, "start", 0.0)), float(getattr(s, "end", 0.0))))
     text_parts: List[str] = []

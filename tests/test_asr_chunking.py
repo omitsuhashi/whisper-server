@@ -157,6 +157,35 @@ class TestAsrChunking(unittest.TestCase):
         self.assertEqual(len(merged.segments), 2)
         self.assertEqual(merged.text, "きょうは天気ですきょうも天気です")
 
+    def test_merge_does_not_dedup_similar_text_across_chunk_boundary(self) -> None:
+        sample_rate = 16000
+        windows = [
+            (0 * sample_rate, 26 * sample_rate, 0 * sample_rate, 25 * sample_rate),
+            (24 * sample_rate, 51 * sample_rate, 25 * sample_rate, 50 * sample_rate),
+        ]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=24.4, end=25.1, text="きょうは天気です"),
+                ],
+            ),
+            TranscriptionResult(
+                filename="chunk2",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=0.9, end=1.6, text="きょうも天気です"),
+                ],
+            ),
+        ]
+
+        merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertEqual(len(merged.segments), 2)
+        self.assertEqual(merged.text, "きょうは天気ですきょうも天気です")
+
     def test_merge_contained_threshold_can_be_controlled_by_env(self) -> None:
         sample_rate = 16000
         windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
