@@ -22,6 +22,7 @@ _DEFAULT_VAD_CONFIG = resolve_vad_config()
 _DEFAULT_DUPLICATE_GAP_SECONDS = 0.5
 _CONTAINED_MATCH_EDGE_MARGIN_SECONDS = 0.35
 _CONTAINED_MATCH_EDGE_MARGIN_ENV = "ASR_CONTAINED_MATCH_EDGE_MARGIN_SECONDS"
+_BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS = 0.35
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -110,6 +111,7 @@ def _segment_relation(
     prev: TranscriptionSegment,
     new: TranscriptionSegment,
     *,
+    is_boundary_candidate: bool,
     allow_contained_match: bool,
 ) -> tuple[bool, float]:
     prev_start = float(getattr(prev, "start", 0.0))
@@ -132,11 +134,11 @@ def _segment_relation(
     if prev_text and new_text:
         if prev_text == new_text and gap <= _DEFAULT_DUPLICATE_GAP_SECONDS:
             duplicate_like = True
-        elif sim >= 0.72 and gap <= 0.35:
+        elif is_boundary_candidate and sim >= 0.72 and gap <= 0.35:
             duplicate_like = True
         elif allow_contained_match and contained and gap <= 0.35:
             duplicate_like = True
-        elif overlap_ratio >= 0.8 and gap <= 0.2:
+        elif is_boundary_candidate and overlap_ratio >= 0.8 and gap <= 0.2:
             duplicate_like = True
     return duplicate_like, sim
 
@@ -233,6 +235,10 @@ def _merge_results(
             )
             if segments_with_margin:
                 last, last_edge_margin = segments_with_margin[-1]
+                is_boundary_candidate = (
+                    last_edge_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS
+                    or edge_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS
+                )
                 allow_contained_match = (
                     last_edge_margin <= contained_match_edge_margin_seconds
                     or edge_margin <= contained_match_edge_margin_seconds
@@ -240,6 +246,7 @@ def _merge_results(
                 duplicate_like, similarity = _segment_relation(
                     last,
                     new_segment,
+                    is_boundary_candidate=is_boundary_candidate,
                     allow_contained_match=allow_contained_match,
                 )
                 if duplicate_like:
