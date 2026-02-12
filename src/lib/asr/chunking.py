@@ -146,7 +146,7 @@ def _segment_relation(
             duplicate_like = True
         elif allow_contained_match and contained and gap <= 0.35 and raw_overlap_ratio >= 0.8:
             duplicate_like = True
-        elif is_boundary_candidate and overlap_ratio >= 0.8 and gap <= 0.2:
+        elif is_boundary_candidate and sim >= 0.72 and overlap_ratio >= 0.8 and gap <= 0.2:
             duplicate_like = True
     return duplicate_like, sim
 
