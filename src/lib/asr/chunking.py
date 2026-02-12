@@ -128,8 +128,10 @@ def _segment_relation(
     prev_dur = max(prev_end - prev_start, 1e-6)
     new_dur = max(new_end - new_start, 1e-6)
     overlap_ratio = max(0.0, overlap) / max(min(prev_dur, new_dur), 1e-6)
+    prev_raw_dur = max(float(prev_raw_end) - float(prev_raw_start), 1e-6)
+    new_raw_dur = max(float(new_raw_end) - float(new_raw_start), 1e-6)
     raw_overlap = min(float(prev_raw_end), float(new_raw_end)) - max(float(prev_raw_start), float(new_raw_start))
-    raw_overlap_ratio = max(0.0, raw_overlap) / max(min(prev_dur, new_dur), 1e-6)
+    raw_overlap_ratio = max(0.0, raw_overlap) / max(min(prev_raw_dur, new_raw_dur), 1e-6)
 
     prev_text = _normalize_text(getattr(prev, "text", "") or "")
     new_text = _normalize_text(getattr(new, "text", "") or "")

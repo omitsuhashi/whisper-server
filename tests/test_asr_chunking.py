@@ -186,6 +186,35 @@ class TestAsrChunking(unittest.TestCase):
         self.assertEqual(len(merged.segments), 2)
         self.assertEqual(merged.text, "きょうは天気ですきょうも天気です")
 
+    def test_merge_uses_raw_duration_for_boundary_overlap_ratio(self) -> None:
+        sample_rate = 16000
+        windows = [
+            (0 * sample_rate, 26 * sample_rate, 0 * sample_rate, 25 * sample_rate),
+            (24 * sample_rate, 51 * sample_rate, 25 * sample_rate, 50 * sample_rate),
+        ]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=24.95, end=25.20, text="abcdeX"),
+                ],
+            ),
+            TranscriptionResult(
+                filename="chunk2",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=1.08, end=1.30, text="abcdeY"),
+                ],
+            ),
+        ]
+
+        merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+        self.assertEqual(len(merged.segments), 2)
+        self.assertEqual(merged.text, "abcdeXabcdeY")
+
     def test_merge_contained_threshold_can_be_controlled_by_env(self) -> None:
         sample_rate = 16000
         windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
