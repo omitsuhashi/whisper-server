@@ -119,6 +119,27 @@ class TestAsrChunking(unittest.TestCase):
         self.assertEqual(len(merged.segments), 2)
         self.assertEqual(merged.text, "はいはい、お願いします")
 
+    def test_merge_contained_threshold_can_be_controlled_by_env(self) -> None:
+        sample_rate = 16000
+        windows = [(0, sample_rate * 30, 0, sample_rate * 30)]
+        partials = [
+            TranscriptionResult(
+                filename="chunk1",
+                text="",
+                language="ja",
+                segments=[
+                    TranscriptionSegment(start=0.2, end=0.4, text="abc"),
+                    TranscriptionSegment(start=0.45, end=1.0, text="abcxyz"),
+                ],
+            )
+        ]
+
+        with mock.patch.dict("os.environ", {"ASR_CONTAINED_MATCH_EDGE_MARGIN_SECONDS": "0.1"}, clear=False):
+            merged = _merge_results(partials, chunk_windows=windows, filename="sample.pcm", language="ja")
+
+        self.assertEqual(len(merged.segments), 2)
+        self.assertEqual(merged.text, "abcabcxyz")
+
     def test_merge_logs_summary(self) -> None:
         sample_rate = 16000
         windows = [(0, sample_rate * 10, 0, sample_rate * 10)]

@@ -21,6 +21,7 @@ ChunkWindow = Tuple[int, int, int, int]
 _DEFAULT_VAD_CONFIG = resolve_vad_config()
 _DEFAULT_DUPLICATE_GAP_SECONDS = 0.5
 _CONTAINED_MATCH_EDGE_MARGIN_SECONDS = 0.35
+_CONTAINED_MATCH_EDGE_MARGIN_ENV = "ASR_CONTAINED_MATCH_EDGE_MARGIN_SECONDS"
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -90,6 +91,19 @@ def _segment_edge_margin(start: float, end: float, *, window_start: float, windo
     left = max(0.0, float(start) - float(window_start))
     right = max(0.0, float(window_end) - float(end))
     return min(left, right)
+
+
+def _resolve_contained_match_edge_margin_seconds() -> float:
+    raw_value = os.getenv(_CONTAINED_MATCH_EDGE_MARGIN_ENV)
+    if raw_value is None:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    if not np.isfinite(value) or value < 0:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    return value
 
 
 def _segment_relation(
@@ -169,6 +183,7 @@ def _merge_results(
     language: Optional[str],
 ) -> TranscriptionResult:
     segments_with_margin: List[tuple[TranscriptionSegment, float]] = []
+    contained_match_edge_margin_seconds = _resolve_contained_match_edge_margin_seconds()
     total_input = 0
     total_clipped = 0
     total_kept = 0
@@ -219,8 +234,8 @@ def _merge_results(
             if segments_with_margin:
                 last, last_edge_margin = segments_with_margin[-1]
                 allow_contained_match = (
-                    last_edge_margin <= _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
-                    or edge_margin <= _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+                    last_edge_margin <= contained_match_edge_margin_seconds
+                    or edge_margin <= contained_match_edge_margin_seconds
                 )
                 duplicate_like, similarity = _segment_relation(
                     last,
