@@ -3,3 +3,4 @@
 /issue/
 /pg_data/
 /.issue-importer/
+__pycache__/

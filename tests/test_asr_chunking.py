@@ -1,15 +1,7 @@
-import sys
-import types
 import unittest
 from unittest import mock
 
 import numpy as np
-
-# mlx_whisper stub
-original_mlx = sys.modules.get("mlx_whisper")
-mlx_stub = types.ModuleType("mlx_whisper")
-mlx_stub.transcribe = lambda *args, **kwargs: None
-sys.modules["mlx_whisper"] = mlx_stub
 
 from src.lib.asr.chunking import _merge_results, transcribe_waveform_chunked
 from src.lib.asr.models import TranscriptionResult, TranscriptionSegment
@@ -17,18 +9,7 @@ from src.lib.asr.options import TranscribeOptions
 from src.lib.vad import SpeechSegment
 
 
-def _restore() -> None:
-    if original_mlx is not None:
-        sys.modules["mlx_whisper"] = original_mlx
-    else:
-        sys.modules.pop("mlx_whisper", None)
-
-
 class TestAsrChunking(unittest.TestCase):
-    @classmethod
-    def tearDownClass(cls) -> None:
-        _restore()
-
     @mock.patch("src.lib.asr.chunking.detect_voice_segments")
     @mock.patch("src.lib.asr.chunking._phase_run_asr_waveform")
     def test_vad_boundaries_have_margin(
