@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import logging
+import os
 from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -17,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 ChunkWindow = Tuple[int, int, int, int]
 _DEFAULT_VAD_CONFIG = resolve_vad_config()
+_DEFAULT_DUPLICATE_GAP_SECONDS = 0.5
+_CONTAINED_MATCH_EDGE_MARGIN_SECONDS = 0.35
+_CONTAINED_MATCH_EDGE_MARGIN_ENV = "ASR_CONTAINED_MATCH_EDGE_MARGIN_SECONDS"
+_BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS = 0.35
 
 
 def _build_chunks(length: int, chunk_samples: int, overlap_samples: int) -> List[ChunkWindow]:
@@ -62,6 +68,123 @@ def _seg_get(seg: Any, key: str) -> Any:
     return getattr(seg, key, None)
 
 
+def _to_float(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        as_float = float(value)
+        if np.isfinite(as_float):
+            return as_float
+    return None
+
+
+def _normalize_text(text: str) -> str:
+    return "".join((text or "").strip().split())
+
+
+def _text_similarity(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    return float(SequenceMatcher(a=left, b=right).ratio())
+
+
+def _segment_edge_distances(start: float, end: float, *, window_start: float, window_end: float) -> tuple[float, float]:
+    left = max(0.0, float(start) - float(window_start))
+    right = max(0.0, float(window_end) - float(end))
+    return left, right
+
+
+def _resolve_contained_match_edge_margin_seconds() -> float:
+    raw_value = os.getenv(_CONTAINED_MATCH_EDGE_MARGIN_ENV)
+    if raw_value is None:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    if not np.isfinite(value) or value < 0:
+        return _CONTAINED_MATCH_EDGE_MARGIN_SECONDS
+    return value
+
+
+def _segment_relation(
+    prev: TranscriptionSegment,
+    new: TranscriptionSegment,
+    *,
+    is_boundary_candidate: bool,
+    allow_contained_match: bool,
+    prev_raw_start: float,
+    prev_raw_end: float,
+    new_raw_start: float,
+    new_raw_end: float,
+) -> tuple[bool, float]:
+    prev_start = float(getattr(prev, "start", 0.0))
+    prev_end = float(getattr(prev, "end", prev_start))
+    new_start = float(getattr(new, "start", 0.0))
+    new_end = float(getattr(new, "end", new_start))
+
+    gap = new_start - prev_end
+    overlap = min(prev_end, new_end) - max(prev_start, new_start)
+    prev_dur = max(prev_end - prev_start, 1e-6)
+    new_dur = max(new_end - new_start, 1e-6)
+    overlap_ratio = max(0.0, overlap) / max(min(prev_dur, new_dur), 1e-6)
+    prev_raw_dur = max(float(prev_raw_end) - float(prev_raw_start), 1e-6)
+    new_raw_dur = max(float(new_raw_end) - float(new_raw_start), 1e-6)
+    raw_overlap = min(float(prev_raw_end), float(new_raw_end)) - max(float(prev_raw_start), float(new_raw_start))
+    raw_overlap_ratio = max(0.0, raw_overlap) / max(min(prev_raw_dur, new_raw_dur), 1e-6)
+
+    prev_text = _normalize_text(getattr(prev, "text", "") or "")
+    new_text = _normalize_text(getattr(new, "text", "") or "")
+    sim = _text_similarity(prev_text, new_text)
+    contained = bool(prev_text and new_text and (prev_text in new_text or new_text in prev_text))
+
+    duplicate_like = False
+    if prev_text and new_text:
+        if prev_text == new_text and gap <= _DEFAULT_DUPLICATE_GAP_SECONDS:
+            duplicate_like = True
+        elif is_boundary_candidate and sim >= 0.72 and gap <= 0.35 and raw_overlap_ratio >= 0.8:
+            duplicate_like = True
+        elif allow_contained_match and contained and gap <= 0.35 and raw_overlap_ratio >= 0.8:
+            duplicate_like = True
+        elif is_boundary_candidate and sim >= 0.72 and overlap_ratio >= 0.8 and gap <= 0.2:
+            duplicate_like = True
+    return duplicate_like, sim
+
+
+def _segment_quality_score(segment: TranscriptionSegment, *, edge_margin: float) -> tuple[float, int, float, float, float, float]:
+    avg_logprob = _to_float(getattr(segment, "avg_logprob", None))
+    no_speech = _to_float(getattr(segment, "no_speech_prob", None))
+    comp_ratio = _to_float(getattr(segment, "compression_ratio", None))
+    start = float(getattr(segment, "start", 0.0))
+    end = float(getattr(segment, "end", start))
+    duration = max(0.0, end - start)
+    metric_count = int(avg_logprob is not None) + int(no_speech is not None) + int(comp_ratio is not None)
+    logprob_score = avg_logprob if avg_logprob is not None else -99.0
+    no_speech_score = -no_speech if no_speech is not None else -99.0
+    comp_score = -abs(comp_ratio - 1.0) if comp_ratio is not None else -99.0
+    return (
+        float(edge_margin),
+        metric_count,
+        logprob_score,
+        no_speech_score,
+        comp_score,
+        duration,
+    )
+
+
+def _prefer_new_segment(
+    prev: TranscriptionSegment,
+    prev_edge_margin: float,
+    new: TranscriptionSegment,
+    new_edge_margin: float,
+) -> bool:
+    prev_score = _segment_quality_score(prev, edge_margin=prev_edge_margin)
+    new_score = _segment_quality_score(new, edge_margin=new_edge_margin)
+    if new_score != prev_score:
+        return new_score > prev_score
+    return float(getattr(new, "end", 0.0)) >= float(getattr(prev, "end", 0.0))
+
+
 def _merge_results(
     partials: Sequence[TranscriptionResult],
     *,
@@ -69,39 +192,151 @@ def _merge_results(
     filename: str,
     language: Optional[str],
 ) -> TranscriptionResult:
-    segments: List[TranscriptionSegment] = []
-    for res, (raw_start, _, main_start, main_end) in zip(partials, chunk_windows):
+    segments_with_margin: List[tuple[TranscriptionSegment, float, bool, bool, float, float]] = []
+    contained_match_edge_margin_seconds = _resolve_contained_match_edge_margin_seconds()
+    total_input = 0
+    total_clipped = 0
+    total_kept = 0
+    total_dedup_skipped = 0
+    total_dedup_replaced = 0
+    for idx, (res, (raw_start, raw_end, main_start, main_end)) in enumerate(
+        zip(partials, chunk_windows),
+        start=1,
+    ):
         offset_sec = raw_start / float(_SR)
+        raw_end_sec = raw_end / float(_SR)
         window_start = main_start / float(_SR)
         window_end = main_end / float(_SR)
+        has_left_overlap = raw_start < main_start
+        has_right_overlap = raw_end > main_end
+        window_input = 0
+        window_clipped = 0
+        window_kept = 0
+        window_dedup_skipped = 0
+        window_dedup_replaced = 0
         for seg in getattr(res, "segments", []) or []:
+            total_input += 1
+            window_input += 1
             seg_start = float(_seg_get(seg, "start") or 0.0) + offset_sec
             seg_end = float(_seg_get(seg, "end") or seg_start) + offset_sec
+            raw_seg_start = seg_start
+            raw_seg_end = seg_end
             clipped = _clip_segment(seg_start, seg_end, window_start, window_end)
             if clipped is None:
+                total_clipped += 1
+                window_clipped += 1
                 continue
             new_start, new_end = clipped
             seg_text = str(_seg_get(seg, "text") or "")
-            if segments:
-                last = segments[-1]
-                last_text = getattr(last, "text", "").strip()
-                if last_text and last_text == seg_text.strip():
-                    gap = float(new_start) - float(getattr(last, "end", new_start))
-                    if gap <= 0.5:
-                        continue
-            segments.append(
-                TranscriptionSegment.model_validate(
-                    {
-                        "start": new_start,
-                        "end": new_end,
-                        "text": seg_text,
-                        "avg_logprob": _seg_get(seg, "avg_logprob"),
-                        "compression_ratio": _seg_get(seg, "compression_ratio"),
-                        "no_speech_prob": _seg_get(seg, "no_speech_prob"),
-                        "temperature": _seg_get(seg, "temperature"),
-                    }
-                )
+            new_segment = TranscriptionSegment.model_validate(
+                {
+                    "start": new_start,
+                    "end": new_end,
+                    "text": seg_text,
+                    "avg_logprob": _seg_get(seg, "avg_logprob"),
+                    "compression_ratio": _seg_get(seg, "compression_ratio"),
+                    "no_speech_prob": _seg_get(seg, "no_speech_prob"),
+                    "temperature": _seg_get(seg, "temperature"),
+                }
             )
+            left_margin, right_margin = _segment_edge_distances(
+                new_start,
+                new_end,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            edge_margin = min(left_margin, right_margin)
+            boundary_edge = (
+                (has_left_overlap and left_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS)
+                or (has_right_overlap and right_margin <= _BOUNDARY_DUPLICATE_EDGE_MARGIN_SECONDS)
+            )
+            contained_edge = (
+                (has_left_overlap and left_margin <= contained_match_edge_margin_seconds)
+                or (has_right_overlap and right_margin <= contained_match_edge_margin_seconds)
+            )
+            if segments_with_margin:
+                (
+                    last,
+                    last_edge_margin,
+                    last_boundary_edge,
+                    last_contained_edge,
+                    last_raw_start,
+                    last_raw_end,
+                ) = segments_with_margin[-1]
+                is_boundary_candidate = (
+                    last_boundary_edge
+                    or boundary_edge
+                )
+                allow_contained_match = (
+                    last_contained_edge
+                    or contained_edge
+                )
+                duplicate_like, similarity = _segment_relation(
+                    last,
+                    new_segment,
+                    is_boundary_candidate=is_boundary_candidate,
+                    allow_contained_match=allow_contained_match,
+                    prev_raw_start=last_raw_start,
+                    prev_raw_end=last_raw_end,
+                    new_raw_start=raw_seg_start,
+                    new_raw_end=raw_seg_end,
+                )
+                if duplicate_like:
+                    replaced = _prefer_new_segment(last, last_edge_margin, new_segment, edge_margin)
+                    if replaced:
+                        segments_with_margin[-1] = (
+                            new_segment,
+                            edge_margin,
+                            boundary_edge,
+                            contained_edge,
+                            raw_seg_start,
+                            raw_seg_end,
+                        )
+                        total_dedup_replaced += 1
+                        window_dedup_replaced += 1
+                    else:
+                        total_dedup_skipped += 1
+                        window_dedup_skipped += 1
+                    logger.debug(
+                        "chunk_merge_dedup window=%d similarity=%.3f replaced=%s",
+                        idx,
+                        similarity,
+                        "1" if replaced else "0",
+                    )
+                    if not replaced:
+                        continue
+                    # 置換済みのため append は不要
+                    continue
+            segments_with_margin.append(
+                (new_segment, edge_margin, boundary_edge, contained_edge, raw_seg_start, raw_seg_end)
+            )
+            total_kept += 1
+            window_kept += 1
+        logger.debug(
+            "chunk_merge_window index=%d raw_start=%.3f raw_end=%.3f main_start=%.3f main_end=%.3f input=%d clipped=%d kept=%d dedup_skipped=%d dedup_replaced=%d",
+            idx,
+            offset_sec,
+            raw_end_sec,
+            window_start,
+            window_end,
+            window_input,
+            window_clipped,
+            window_kept,
+            window_dedup_skipped,
+            window_dedup_replaced,
+        )
+
+    logger.debug(
+        "chunk_merge_summary windows=%d input=%d clipped=%d kept=%d dedup_skipped=%d dedup_replaced=%d",
+        len(chunk_windows),
+        total_input,
+        total_clipped,
+        total_kept,
+        total_dedup_skipped,
+        total_dedup_replaced,
+    )
+
+    segments: List[TranscriptionSegment] = [seg for seg, _, _, _, _, _ in segments_with_margin]
 
     segments.sort(key=lambda s: (float(getattr(s, "start", 0.0)), float(getattr(s, "end", 0.0))))
     text_parts: List[str] = []
@@ -161,18 +396,29 @@ def _phase_plan_chunking(
     chunk_samples: int,
     overlap_samples: int,
     segments: Sequence[SpeechSegment],
+    *,
+    vad_margin_samples: int = 0,
 ) -> List[ChunkWindow]:
     """Phase 2 (Chunking): VAD 区間を優先してチャンク計画を立てる。"""
 
     if not segments:
         return _build_chunks(total_samples, chunk_samples, overlap_samples)
 
-    planned: List[ChunkWindow] = []
-    for segment in segments:
-        seg_start = int(segment.start_sample)
-        seg_end = int(segment.end_sample)
+    margin = max(int(vad_margin_samples), 0)
+    expanded_ranges: List[Tuple[int, int]] = []
+    for segment in sorted(segments, key=lambda x: int(x.start_sample)):
+        seg_start = max(0, int(segment.start_sample) - margin)
+        seg_end = min(total_samples, int(segment.end_sample) + margin)
         if seg_end <= seg_start:
             continue
+        if expanded_ranges and seg_start <= expanded_ranges[-1][1]:
+            prev_start, prev_end = expanded_ranges[-1]
+            expanded_ranges[-1] = (prev_start, max(prev_end, seg_end))
+            continue
+        expanded_ranges.append((seg_start, seg_end))
+
+    planned: List[ChunkWindow] = []
+    for seg_start, seg_end in expanded_ranges:
         seg_length = seg_end - seg_start
         local_chunks = _build_chunks(seg_length, chunk_samples, overlap_samples)
         for raw_start, raw_end, main_start, main_end in local_chunks:
@@ -255,8 +501,35 @@ def transcribe_waveform_chunked(
 
     chunk_samples = max(int(_SR * chunk_seconds), 1)
     overlap_samples = int(_SR * overlap_seconds)
+    raw_margin = os.getenv("ASR_VAD_BOUNDARY_MARGIN_SECONDS")
+    if raw_margin is None:
+        vad_margin_samples = max(overlap_samples, 0)
+    else:
+        try:
+            margin_seconds = float(raw_margin)
+        except ValueError:
+            margin_seconds = overlap_seconds
+        if not np.isfinite(margin_seconds) or margin_seconds < 0:
+            margin_seconds = overlap_seconds
+        vad_margin_samples = max(int(_SR * margin_seconds), 0)
     segments = _phase_detect_segments(wave, _SR, vad_config=vad_cfg)
-    chunk_windows = _phase_plan_chunking(total, chunk_samples, overlap_samples, segments)
+    chunk_windows = _phase_plan_chunking(
+        total,
+        chunk_samples,
+        overlap_samples,
+        segments,
+        vad_margin_samples=vad_margin_samples,
+    )
+    logger.debug(
+        "chunk_plan_summary filename=%s total_samples=%d vad_segments=%d chunk_windows=%d chunk_samples=%d overlap_samples=%d vad_margin_samples=%d",
+        name,
+        total,
+        len(segments),
+        len(chunk_windows),
+        chunk_samples,
+        overlap_samples,
+        vad_margin_samples,
+    )
     partials = _phase_run_asr_waveform(
         chunk_windows,
         wave,
