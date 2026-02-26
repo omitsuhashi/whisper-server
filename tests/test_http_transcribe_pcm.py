@@ -1,4 +1,7 @@
+import asyncio
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -69,6 +72,66 @@ class TestTranscribePCM(unittest.TestCase):
             data={"sample_rate": "16000"},
         )
         self.assertEqual(res.status_code, 400)
+
+
+class TestTranscribePCMConcurrency(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _restore()
+
+    def _pcm_bytes(self, samples: int = 1600) -> bytes:
+        payload = (np.sin(np.linspace(0, np.pi, samples)) * 1000).astype(np.int16)
+        return payload.tobytes()
+
+    async def test_transcribe_pcm_runs_asr_serially(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from src.cmd.http import create_app
+        from src.lib.asr.models import TranscriptionResult
+
+        app = create_app()
+        counter = {"active": 0, "max_active": 0}
+        counter_lock = threading.Lock()
+
+        def _fake_chunked(
+            waveform: np.ndarray,
+            *,
+            options,
+            name: str,
+            chunk_seconds: float = 25.0,
+            overlap_seconds: float = 1.0,
+            vad_config=None,
+        ) -> TranscriptionResult:
+            _ = (waveform, options, chunk_seconds, overlap_seconds, vad_config)
+            with counter_lock:
+                counter["active"] += 1
+                counter["max_active"] = max(counter["max_active"], counter["active"])
+            time.sleep(0.15)
+            with counter_lock:
+                counter["active"] -= 1
+            return TranscriptionResult(
+                filename=name,
+                text="ok",
+                language="ja",
+                duration=0.15,
+                segments=[],
+            )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+            with mock.patch("src.cmd.http.transcribe_waveform_chunked", side_effect=_fake_chunked):
+                pcm = self._pcm_bytes(samples=16000 * 2)
+
+                async def _post_once():
+                    return await client.post(
+                        "/transcribe_pcm",
+                        files={"file": ("audio.pcm", pcm, "application/octet-stream")},
+                        data={"sample_rate": "16000", "chunk_seconds": "1"},
+                    )
+
+                responses = await asyncio.gather(_post_once(), _post_once())
+
+        self.assertTrue(all(res.status_code == 200 for res in responses))
+        self.assertEqual(counter["max_active"], 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

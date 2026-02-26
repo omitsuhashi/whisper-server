@@ -154,6 +154,7 @@ def create_app() -> FastAPI:
     setup_logging()
     ensure_memory_watchdog()
     app = FastAPI(title="mlx Whisper ASR")
+    asr_lock = asyncio.Lock()
 
     @app.middleware("http")
     async def _attach_request_context(request: Request, call_next):
@@ -303,22 +304,23 @@ def create_app() -> FastAPI:
         )
         try:
             asr_start = time.monotonic()
-            if inputs.chunk_seconds > 0:
-                result = await asyncio.to_thread(
-                    transcribe_waveform_chunked,
-                    waveform,
-                    options=options,
-                    name=filename,
-                    chunk_seconds=inputs.chunk_seconds,
-                    overlap_seconds=inputs.overlap_seconds,
-                )
-            else:
-                result = await asyncio.to_thread(
-                    transcribe_waveform,
-                    waveform,
-                    options=options,
-                    name=filename,
-                )
+            async with asr_lock:
+                if inputs.chunk_seconds > 0:
+                    result = await asyncio.to_thread(
+                        transcribe_waveform_chunked,
+                        waveform,
+                        options=options,
+                        name=filename,
+                        chunk_seconds=inputs.chunk_seconds,
+                        overlap_seconds=inputs.overlap_seconds,
+                    )
+                else:
+                    result = await asyncio.to_thread(
+                        transcribe_waveform,
+                        waveform,
+                        options=options,
+                        name=filename,
+                    )
         except Exception as exc:  # noqa: BLE001 - 予期せぬ障害は500で返す
             logger.exception("transcribe_pcm_failed kind=server_error file=%s", filename)
             raise HTTPException(status_code=500, detail="書き起こしに失敗しました") from exc
